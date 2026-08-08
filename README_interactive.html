@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gamlssPosthoc 0.2.0 — README interativo</title>
+<style>
+:root{--bg:#fff;--fg:#17202a;--muted:#657786;--panel:#f5f7f9;--line:#d9e0e6;--accent:#2457a6;--code:#f6f8fa}
+[data-theme="dark"]{--bg:#11161c;--fg:#e9eef3;--muted:#9aabb9;--panel:#182028;--line:#34414c;--accent:#83b5ff;--code:#161b22}
+*{box-sizing:border-box} html{scroll-behavior:smooth} body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.62 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+.top{position:sticky;top:0;z-index:10;display:flex;gap:.7rem;align-items:center;padding:.7rem 1rem;background:color-mix(in srgb,var(--bg) 92%,transparent);border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
+.top strong{margin-right:auto} input{min-width:18rem;max-width:42vw;padding:.55rem .7rem;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)} button{border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);padding:.5rem .7rem;cursor:pointer}
+.layout{display:grid;grid-template-columns:280px minmax(0,900px);gap:2rem;max-width:1240px;margin:auto;padding:1.5rem}
+aside{position:sticky;top:64px;height:calc(100vh - 80px);overflow:auto;padding-right:1rem;border-right:1px solid var(--line)} .toc{display:block;color:var(--fg);text-decoration:none;padding:.25rem 0} .toc.l3{padding-left:1rem;font-size:.92em;color:var(--muted)} .toc.active{color:var(--accent);font-weight:650}
+main{min-width:0} h1,h2,h3{line-height:1.25;scroll-margin-top:72px} h1{font-size:2.1rem} h2{margin-top:2.4rem;border-bottom:1px solid var(--line);padding-bottom:.35rem} .anchor{opacity:0;text-decoration:none;margin-left:.4rem;color:var(--accent)} h1:hover .anchor,h2:hover .anchor,h3:hover .anchor{opacity:.7}
+a{color:var(--accent)} code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace} :not(pre)>code{background:var(--code);padding:.12rem .3rem;border-radius:4px}
+.codewrap{position:relative;margin:1rem 0} pre{overflow:auto;padding:1rem;border:1px solid var(--line);border-radius:9px;background:var(--code)} .copy{position:absolute;right:.45rem;top:.45rem;font-size:.78rem;opacity:.8}
+blockquote{margin-left:0;padding:.6rem 1rem;border-left:4px solid var(--accent);background:var(--panel)} table{border-collapse:collapse;width:100%;overflow:auto;display:block} th,td{border:1px solid var(--line);padding:.45rem .65rem} th{background:var(--panel)}
+.route{border:1px solid var(--line);background:var(--panel);padding:1rem;border-radius:10px;margin:.8rem 0 1.5rem} .route select{padding:.4rem;margin:.25rem;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px}
+.hidden-search{display:none!important}
+@media(max-width:900px){.layout{grid-template-columns:1fr} aside{display:none} input{min-width:0;max-width:none;flex:1}}
+</style></head><body>
+<div class="top"><strong>gamlssPosthoc 0.2.0</strong><input id="search" placeholder="Buscar no README…"><button id="theme">Claro/escuro</button></div>
+<div class="layout"><aside><div class="route"><b>Assistente de engine</b><br><label>Estimando <select id="est"><option>parameter</option><option>mean</option><option>variance</option><option>quantile</option><option>prob_zero</option></select></label><br><label>População <select id="pop"><option>observed</option><option>balanced</option><option>reference</option></select></label><br><label>Smoother <select id="smooth"><option value="no">não</option><option value="yes">sim</option></select></label><p id="rec"></p></div><a class="toc l2" href="#o-que-mudou-em-0-2-0">O que mudou em 0.2.0</a>
+<a class="toc l3" href="#1-zero-adjusted-genérico">1. Zero-adjusted genérico</a>
+<a class="toc l3" href="#2-adapter-de-modelo">2. Adapter de modelo</a>
+<a class="toc l3" href="#3-mais-responsabilidade-para-marginaleffects">3. Mais responsabilidade para marginaleffects</a>
+<a class="toc l3" href="#4-o-estimando-fica-registrado">4. O estimando fica registrado</a>
+<a class="toc l3" href="#5-incerteza-em-camadas">5. Incerteza em camadas</a>
+<a class="toc l3" href="#6-contrastes-em-escala-científica">6. Contrastes em escala científica</a>
+<a class="toc l3" href="#7-regressão-quantitativa-ampliada">7. Regressão quantitativa ampliada</a>
+<a class="toc l3" href="#8-diagnóstico-verdadeiro">8. Diagnóstico verdadeiro</a>
+<a class="toc l2" href="#instalação-local">Instalação local</a>
+<a class="toc l2" href="#exemplo-1-contraste-científico-em-gamma">Exemplo 1: contraste científico em Gamma</a>
+<a class="toc l2" href="#exemplo-2-zero-adjusted-generalized-gamma">Exemplo 2: zero-adjusted Generalized Gamma</a>
+<a class="toc l2" href="#exemplo-3-dose-quantitativa">Exemplo 3: dose quantitativa</a>
+<a class="toc l2" href="#emmeans-onde-continua-sendo-preferido">emmeans: onde continua sendo preferido</a>
+<a class="toc l2" href="#marginaleffects-onde-assume-mais-trabalho">marginaleffects: onde assume mais trabalho</a>
+<a class="toc l2" href="#arquivos-de-exemplo">Arquivos de exemplo</a>
+<a class="toc l2" href="#validação">Validação</a></aside><main><h1 id="gamlssposthoc-0-2-0">gamlssPosthoc 0.2.0<a class="anchor" href="#gamlssposthoc-0-2-0">#</a></h1>
+<p><strong>Inferência marginal e distribucional pós-GAMLSS com estimandos explícitos, zero-adjusted genérico, contrastes científicos e regressão quantitativa.</strong></p>
+<p><code>gamlssPosthoc</code> organiza o pós-processamento de modelos <code>gamlss</code>/<code>gamlssZadj</code> sem assumir que toda “média ajustada” representa a mesma quantidade. A versão 0.2.0 separa formalmente:</p>
+<ol>
+<li><strong>estimando</strong>: parâmetro, média matemática, variância, quantil, massa exata em zero ou função customizada;</li>
+<li><strong>população-alvo</strong>: observada, balanceada ou perfil de referência;</li>
+<li><strong>geometria da comparação</strong>: pareada, referência, sequencial ou polinomial;</li>
+<li><strong>escala científica</strong>: diferença, razão, log-razão ou mudança percentual;</li>
+<li><strong>incerteza</strong>: delta, simulação, bootstrap com refit ou apenas estimativa pontual.</li>
+</ol>
+<h2 id="o-que-mudou-em-0-2-0">O que mudou em 0.2.0<a class="anchor" href="#o-que-mudou-em-0-2-0">#</a></h2>
+<h3 id="1-zero-adjusted-genérico">1. Zero-adjusted genérico<a class="anchor" href="#1-zero-adjusted-genérico">#</a></h3>
+<p>Para <code>gamlssZadj</code>, o pacote reconstrói a distribuição positiva completa com <code>gamlss.dist::GAMLSS()</code> quando possível. Se</p>
+<p>[
+P(Y=0)=h
+]</p>
+<p>e a parte positiva é (Y_+), então</p>
+<p>[
+E(Y)=(1-h)E(Y_+)
+]</p>
+<p>[
+Var(Y)=(1-h)Var(Y_+)+h(1-h)E(Y_+)^2.
+]</p>
+<p>Os quantis são obtidos da distribuição completa:</p>
+<p>[
+Q_Y(p)=0,\quad p\le h,
+]</p>
+<p>[
+Q_Y(p)=Q_+\left(\frac{p-h}{1-h}\right),\quad p&gt;h.
+]</p>
+<p>Isso remove a antiga limitação GA/GAF. Famílias positivas compatíveis, como <code>GG</code>, podem ser processadas sem assumir que <code>mu</code> seja a média.</p>
+<p>Para famílias locais/customizadas que não possam ser convertidas automaticamente, use <code>positive_dist_fun</code>.</p>
+<h3 id="2-adapter-de-modelo">2. Adapter de modelo<a class="anchor" href="#2-adapter-de-modelo">#</a></h3>
+<p>O núcleo não percorre mais uma lista fixa <code>mu/sigma/nu/tau</code>. Ele descobre <code>object$parameters</code>, fórmulas, links e smoothers por uma camada interna de adapter. Isso mantém o pacote utilizável com a infraestrutura atual do <code>gamlss</code> e facilita adapters futuros sem expor detalhes internos na API pública.</p>
+<h3 id="3-mais-responsabilidade-para-marginaleffects">3. Mais responsabilidade para <code>marginaleffects</code><a class="anchor" href="#3-mais-responsabilidade-para-marginaleffects">#</a></h3>
+<p>Quando o alvo é um parâmetro distribucional de um <code>gamlss</code> ordinário, <code>marginaleffects</code> pode assumir:</p>
+<ul>
+<li><code>avg_predictions()</code> para padronização;</li>
+<li><code>avg_comparisons()</code> para diferenças, razões e log-razões; a mudança percentual é transformada a partir da razão das médias marginais, preservando o mesmo estimando do motor distribucional;</li>
+<li><code>avg_slopes()</code> para derivadas de primeira ordem em regressão quantitativa;</li>
+<li><code>inferences(method = &quot;simulation&quot;)</code> quando solicitado e suportado.</li>
+</ul>
+<p>No roteamento <code>engine = &quot;auto&quot;</code>, uma falha de capacidade em um objeto específico retorna ao motor de distribuição em vez de produzir uma resposta parcial silenciosa. Se <code>engine = &quot;marginaleffects&quot;</code> for solicitado explicitamente, a falha é reportada como erro para não mascarar uma incompatibilidade.</p>
+<h3 id="4-o-estimando-fica-registrado">4. O estimando fica registrado<a class="anchor" href="#4-o-estimando-fica-registrado">#</a></h3>
+<p>Todo resultado de <code>gamlss_posthoc()</code> inclui <code>estimand_info</code>, por exemplo:</p>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-text">Target:       marginal response mean including the zero mass
+Definition:   E(Y|x) = [1-P(Y=0|x)] E(Y+|Y&gt;0,x)
+Population:   observed
+Weighting:    proportional
+Scale:        response/distribution
+</code></pre></div>
+<h3 id="5-incerteza-em-camadas">5. Incerteza em camadas<a class="anchor" href="#5-incerteza-em-camadas">#</a></h3>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">uncertainty = &quot;delta&quot;
+uncertainty = &quot;simulation&quot;
+uncertainty = &quot;bootstrap&quot;
+uncertainty = &quot;none&quot;
+</code></pre></div>
+<p>O bootstrap completo pode ser paramétrico, por casos ou por clusters. <code>auto</code> não dispara centenas de refits ocultos; <code>gamlss_posthoc_plan()</code> informa quando bootstrap explícito é recomendado para intervalos de estimandos derivados.</p>
+<h3 id="6-contrastes-em-escala-científica">6. Contrastes em escala científica<a class="anchor" href="#6-contrastes-em-escala-científica">#</a></h3>
+<p>A pergunta “quais níveis?” é separada da pergunta “qual efeito?”.</p>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">contrast = &quot;reference&quot;
+comparison = &quot;difference&quot;
+</code></pre></div>
+<p>ou</p>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">contrast = &quot;reference&quot;
+comparison = &quot;ratio&quot;
+</code></pre></div>
+<p>ou</p>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">comparison = &quot;percent_change&quot;
+</code></pre></div>
+<p>Assim, uma comparação pode ser apresentada diretamente como</p>
+<p>[
+100\left(\frac{E(Y_A)}{E(Y_B)}-1\right),
+]</p>
+<p>sem depender da interpretação implícita da escala de link.</p>
+<h3 id="7-regressão-quantitativa-ampliada">7. Regressão quantitativa ampliada<a class="anchor" href="#7-regressão-quantitativa-ampliada">#</a></h3>
+<p><code>gamlss_trend()</code> agora suporta:</p>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">method = &quot;curve&quot;
+method = &quot;derivative&quot;, derivative_order = 1
+method = &quot;derivative&quot;, derivative_order = 2
+method = &quot;turning_points&quot;
+method = &quot;optimum&quot;, optimum = &quot;maximum&quot;
+</code></pre></div>
+<p>Com bootstrap, também pode construir bandas simultâneas a partir do máximo desvio padronizado entre curvas bootstrap. Para derivadas de primeira ordem de parâmetros ordinários, <code>delta</code> e <code>simulation</code> podem ser delegados a <code>marginaleffects</code>; para alvos derivados da distribuição, essas camadas recaem em bootstrap com refit.</p>
+<h3 id="8-diagnóstico-verdadeiro">8. Diagnóstico verdadeiro<a class="anchor" href="#8-diagnóstico-verdadeiro">#</a></h3>
+<p>Antes de executar uma análise:</p>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">plan &lt;- gamlss_posthoc_plan(
+  fit,
+  estimand = &quot;mean&quot;,
+  contrast = &quot;pairwise&quot;,
+  comparison = &quot;ratio&quot;
+)
+print(plan)
+</code></pre></div>
+<p>O diagnóstico mostra:</p>
+<ul>
+<li>classe e família;</li>
+<li>parâmetros descobertos;</li>
+<li>fórmulas e links;</li>
+<li>smoothers por parâmetro;</li>
+<li>dependências opcionais instaladas;</li>
+<li>elegibilidade de <code>emmeans</code>, <code>marginaleffects</code> e motor distribucional;</li>
+<li>engine recomendado;</li>
+<li>camada de incerteza recomendada;</li>
+<li>avisos estruturais.</li>
+</ul>
+<p><code>gamlss_engine_info()</code> continua disponível como wrapper resumido para compatibilidade.</p>
+<hr />
+<h2 id="instalação-local">Instalação local<a class="anchor" href="#instalação-local">#</a></h2>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">install.packages(c(
+  &quot;gamlss&quot;, &quot;gamlss.dist&quot;, &quot;distributions3&quot;,
+  &quot;gamlss.inf&quot;, &quot;emmeans&quot;, &quot;marginaleffects&quot;,
+  &quot;future&quot;, &quot;future.apply&quot;, &quot;multcompView&quot;
+))
+
+install.packages(&quot;gamlssPosthoc_0.2.0.tar.gz&quot;, repos = NULL, type = &quot;source&quot;)
+</code></pre></div>
+<blockquote>
+<p>O tarball para submissão ao CRAN deve ser criado por <code>R CMD build</code>, não por compactação manual.</p>
+</blockquote>
+<hr />
+<h2 id="exemplo-1-contraste-científico-em-gamma">Exemplo 1: contraste científico em Gamma<a class="anchor" href="#exemplo-1-contraste-científico-em-gamma">#</a></h2>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">library(gamlss)
+library(gamlss.dist)
+library(gamlssPosthoc)
+
+set.seed(1)
+D &lt;- data.frame(trt = factor(rep(c(&quot;T0&quot;, &quot;T1&quot;, &quot;T2&quot;), each = 50)))
+D$y &lt;- rGA(nrow(D), mu = c(T0=3, T1=3.6, T2=4.4)[D$trt], sigma=.25)
+fit &lt;- gamlss(y ~ trt, family = GA, data = D, trace = FALSE)
+
+ans &lt;- gamlss_posthoc(
+  fit,
+  specs = &quot;trt&quot;,
+  estimand = &quot;mean&quot;,
+  population = &quot;observed&quot;,
+  contrast = &quot;reference&quot;,
+  comparison = &quot;percent_change&quot;,
+  uncertainty = &quot;none&quot;,
+  data = D
+)
+
+ans$estimand_info
+ans$estimates
+ans$contrasts
+</code></pre></div>
+<h2 id="exemplo-2-zero-adjusted-generalized-gamma">Exemplo 2: zero-adjusted Generalized Gamma<a class="anchor" href="#exemplo-2-zero-adjusted-generalized-gamma">#</a></h2>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">library(gamlss.inf)
+library(distributions3)
+
+set.seed(2)
+D &lt;- data.frame(trt = factor(rep(c(&quot;Control&quot;, &quot;Bio&quot;), each = 80)))
+mu &lt;- ifelse(D$trt == &quot;Control&quot;, 2, 3)
+h  &lt;- ifelse(D$trt == &quot;Control&quot;, .40, .18)
+ypos &lt;- rGG(nrow(D), mu = mu, sigma=.35, nu=.7)
+D$y &lt;- ifelse(rbinom(nrow(D), 1, h) == 1, 0, ypos)
+
+fitz &lt;- gamlssZadj(
+  y = y,
+  mu.formula = ~ trt,
+  xi0.formula = ~ trt,
+  family = GG,
+  data = D,
+  trace = FALSE
+)
+
+nd &lt;- data.frame(trt = factor(levels(D$trt), levels = levels(D$trt)))
+gamlss_distribution_summary(fitz, nd, data = D)
+
+gamlss_posthoc(
+  fitz, specs = &quot;trt&quot;,
+  estimand = &quot;mean&quot;,
+  contrast = &quot;pairwise&quot;,
+  comparison = &quot;ratio&quot;,
+  uncertainty = &quot;none&quot;,
+  data = D
+)
+</code></pre></div>
+<h2 id="exemplo-3-dose-quantitativa">Exemplo 3: dose quantitativa<a class="anchor" href="#exemplo-3-dose-quantitativa">#</a></h2>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">set.seed(3)
+D &lt;- data.frame(dose = seq(0, 150, length.out = 180))
+eta &lt;- log(2) + .012*D$dose - .000045*D$dose^2
+D$biomass &lt;- rGA(nrow(D), mu=exp(eta), sigma=.20)
+fit &lt;- gamlss(biomass ~ dose + I(dose^2), family=GA, data=D, trace=FALSE)
+g &lt;- seq(0, 150, length.out=151)
+
+gamlss_trend(fit, &quot;dose&quot;, at_x=g,
+             method=&quot;derivative&quot;, derivative_order=1,
+             estimand=&quot;mean&quot;, uncertainty=&quot;none&quot;, data=D)
+
+gamlss_trend(fit, &quot;dose&quot;, at_x=g,
+             method=&quot;turning_points&quot;,
+             estimand=&quot;mean&quot;, uncertainty=&quot;none&quot;, data=D)$special_points
+
+gamlss_trend(fit, &quot;dose&quot;, at_x=g,
+             method=&quot;optimum&quot;, optimum=&quot;maximum&quot;,
+             estimand=&quot;mean&quot;, uncertainty=&quot;none&quot;, data=D)$special_points
+</code></pre></div>
+<h2 id="emmeans-onde-continua-sendo-preferido"><code>emmeans</code>: onde continua sendo preferido<a class="anchor" href="#emmeans-onde-continua-sendo-preferido">#</a></h2>
+<p>O suporte documentado de <code>emmeans</code> a <code>gamlss</code> permanece focado em <code>what = &quot;mu&quot;</code>, <code>&quot;sigma&quot;</code>, <code>&quot;nu&quot;</code> ou <code>&quot;tau&quot;</code> e não cobre a parte selecionada quando ela contém um smoother como <code>pb()</code>. Além disso, nesta versão do <code>gamlssPosthoc</code>, o roteamento automático para <code>emmeans</code> exige <code>population = &quot;reference&quot;</code> e <code>comparison = &quot;difference&quot;</code>; isso impede que uma solicitação para a população observada seja silenciosamente trocada pelo reference grid do <code>emmeans</code>.</p>
+<p>Fonte técnica: <a href="https://rvlenth.github.io/emmeans/articles/models.html">https://rvlenth.github.io/emmeans/articles/models.html</a></p>
+<h2 id="marginaleffects-onde-assume-mais-trabalho"><code>marginaleffects</code>: onde assume mais trabalho<a class="anchor" href="#marginaleffects-onde-assume-mais-trabalho">#</a></h2>
+<p><code>marginaleffects</code> oferece padronização de predições, comparações em múltiplas escalas, slopes e inferência por simulação. O pacote utiliza essas capacidades quando o alvo é um parâmetro de um <code>gamlss</code> ordinário e mantém teste de capacidade em runtime. Razões são razões de médias marginalizadas; <code>percent_change</code> é definido como <code>100 * (ratio - 1)</code>, não como a média de mudanças percentuais unidade a unidade.</p>
+<p>Fontes técnicas:</p>
+<ul>
+<li><a href="https://marginaleffects.com/man/r/predictions.html">https://marginaleffects.com/man/r/predictions.html</a></li>
+<li><a href="https://marginaleffects.com/man/r/comparisons.html">https://marginaleffects.com/man/r/comparisons.html</a></li>
+<li><a href="https://marginaleffects.com/man/r/slopes.html">https://marginaleffects.com/man/r/slopes.html</a></li>
+<li><a href="https://marginaleffects.com/man/r/inferences.html">https://marginaleffects.com/man/r/inferences.html</a></li>
+</ul>
+<h2 id="arquivos-de-exemplo">Arquivos de exemplo<a class="anchor" href="#arquivos-de-exemplo">#</a></h2>
+<p><code>inst/examples/</code> contém exemplos independentes de:</p>
+<ol>
+<li>fatorial Gamma + <code>emmeans</code>;</li>
+<li>smoother <code>pb()</code>;</li>
+<li>GAF e potência média-variância;</li>
+<li>regressão polinomial quantitativa;</li>
+<li>contrastes polinomiais com espaçamento desigual;</li>
+<li>zero-adjusted Gamma;</li>
+<li>ZA-GAF customizada;</li>
+<li><code>marginaleffects</code> opcional;</li>
+<li>compact letter display;</li>
+<li><strong>zero-adjusted GG genérico</strong>;</li>
+<li><strong>diferença/razão/log-razão/%</strong>;</li>
+<li><strong>derivadas, turning points e optimum</strong>;</li>
+<li><strong>diagnóstico completo</strong>;</li>
+<li><strong>marginaleffects como engine de comparação</strong>.</li>
+</ol>
+<h2 id="validação">Validação<a class="anchor" href="#validação">#</a></h2>
+<p>O pacote inclui:</p>
+<div class="codewrap"><button class="copy" type="button">Copiar</button><pre><code class="language-r">tools/cran_preflight.R
+</code></pre></div>
+<p>que, em uma máquina com R e acesso às dependências, executa Roxygen, testes,
+vignette, <code>R CMD build</code> e <code>R CMD check --as-cran</code> sobre o tarball produzido.</p>
+<p>No ambiente em que esta versão foi construída, a instalação temporária de R
+continua bloqueada por isolamento de rede. Por isso, os testes de runtime em R
+devem ser concluídos em uma máquina com R antes da submissão ao CRAN. Nesta
+refatoração foram executadas e aprovadas <strong>20 invariantes arquiteturais</strong> na
+auditoria estática e <strong>19/19 verificações matemáticas independentes</strong>. A suíte
+R preparada contém <strong>39 blocos <code>test_that()</code></strong>, além dos 14 exemplos completos.</p>
+<p>A auditoria de dependências também foi atualizada contra o CRAN em 2026-08-08:
+<code>marginaleffects</code> 0.32.0, <code>emmeans</code> 2.0.4, <code>gamlss</code> 5.5-0,
+<code>gamlss.dist</code> 6.1-1, <code>gamlss.inf</code> 1.0-2 e <code>distributions3</code> 0.2.3. O requisito
+mínimo de <code>distributions3</code> foi corrigido para <code>&gt;= 0.2.1</code>, versão em que a API
+<code>is_discrete()</code> já está disponível, evitando exigir uma versão inexistente no
+CRAN.</p>
+</main></div>
+<script>
+const root=document.documentElement; document.getElementById('theme').onclick=()=>{root.dataset.theme=root.dataset.theme==='dark'?'':'dark';localStorage.setItem('gph-theme',root.dataset.theme)}; root.dataset.theme=localStorage.getItem('gph-theme')||'';
+document.querySelectorAll('.copy').forEach(b=>b.onclick=async()=>{await navigator.clipboard.writeText(b.parentElement.querySelector('code').innerText);b.textContent='Copiado';setTimeout(()=>b.textContent='Copiar',1200)});
+const search=document.getElementById('search'); search.oninput=()=>{const q=search.value.toLowerCase().trim();document.querySelectorAll('main > h2, main > h3, main > p, main > ul, main > ol, main > .codewrap, main > table').forEach(el=>el.classList.toggle('hidden-search',q && !el.innerText.toLowerCase().includes(q)))};
+function route(){let e=est.value,p=pop.value,s=smooth.value;let r;if(e!=='parameter')r='distribution';else if(p==='reference'&&s==='no')r='emmeans (diferença simples) ou marginaleffects';else if(s==='no')r='marginaleffects; fallback distribution';else r='distribution / predição';rec.textContent='Recomendação: '+r}; ['est','pop','smooth'].forEach(id=>document.getElementById(id).onchange=route);route();
+const links=[...document.querySelectorAll('.toc')], secs=links.map(a=>document.querySelector(a.getAttribute('href'))).filter(Boolean);addEventListener('scroll',()=>{let cur=secs[0];for(const s of secs)if(s.getBoundingClientRect().top<120)cur=s;links.forEach(a=>a.classList.toggle('active',cur&&a.getAttribute('href')==='#'+cur.id))});
+</script></body></html>

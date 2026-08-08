@@ -1,0 +1,9 @@
+# Keep every text file as LF in the repository. R CMD check inspects source
+# files for LF line endings, so a CRLF checkout on Windows must not leak into
+# the committed sources.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gz  binary
+*.zip binary

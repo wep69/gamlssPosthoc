@@ -1,0 +1,21 @@
+# RStudio / R session state
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Build and check artefacts
+*.tar.gz
+*.Rcheck/
+..Rcheck/
+/inst/doc/
+/doc/
+/Meta/
+
+# Generated during a local install or vignette render
+*.html.bak
+R_INSTALL_ATTEMPT.log
+
+# OS noise
+.DS_Store
+Thumbs.db

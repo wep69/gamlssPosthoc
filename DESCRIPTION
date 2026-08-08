@@ -1,0 +1,42 @@
+Package: gamlssPosthoc
+Type: Package
+Title: Marginal and Distributional Post-Hoc Inference for GAMLSS Models
+Version: 0.2.0
+Authors@R: person(given = c("Walter", "Esfrain"), family = "Pereira",
+    email = "walterufpb@yahoo.com.br", role = c("aut", "cre", "cph"),
+    comment = c(ORCID = "0000-0003-1085-0191"))
+Description: Provides a conservative post-hoc workflow for generalized additive
+    models for location, scale and shape (GAMLSS), primarily fitted with the
+    'gamlss' package. The package routes simple
+    parameter-wise comparisons to 'emmeans' when supported and uses
+    standardized predictions, full predictive distributions, and refit
+    bootstrap procedures for smoothers, derived estimands, zero-adjusted
+    models, trends, and custom functions of multiple distributional
+    parameters. The framework follows the distributional-regression principles
+    of Rigby and Stasinopoulos (2005) <doi:10.1111/j.1467-9876.2005.00510.x>.
+    The emphasis is on stable inference for means, contrasts, polynomial
+    trends, and distribution-derived quantities in applied experiments.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends: R (>= 4.2.0)
+Imports:
+    graphics,
+    stats,
+    utils
+Suggests:
+    distributions3 (>= 0.2.1),
+    emmeans (>= 2.0.3),
+    future,
+    future.apply,
+    gamlss (>= 5.5-0),
+    gamlss.dist (>= 6.1-1),
+    gamlss.inf (>= 1.0-2),
+    knitr,
+    marginaleffects (>= 0.32.0),
+    multcompView,
+    rmarkdown,
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.1.0

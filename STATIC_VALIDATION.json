@@ -1,0 +1,38 @@
+{
+  "exports": [
+    "gamlss_cld",
+    "gamlss_distribution_summary",
+    "gamlss_engine_info",
+    "gamlss_poly_compare",
+    "gamlss_posthoc",
+    "gamlss_posthoc_plan",
+    "gamlss_trend"
+  ],
+  "function_usage_checks": 7,
+  "r_files": 12,
+  "test_files": 3,
+  "example_files": 14,
+  "critical_invariants": {
+    "dynamic parameters via object$parameters": true,
+    "dynamic fallback parameters from formulas and links": true,
+    "distribution constructor parameters discovered from formals": true,
+    "gamlssZadj formulas via documented S3 method": true,
+    "generic positive distribution constructor": true,
+    "zero mass distinguished from CDF at zero": true,
+    "emmeans restricted to explicit reference population": true,
+    "marginaleffects avg_predictions integration": true,
+    "marginaleffects avg_comparisons integration": true,
+    "marginaleffects pairwise direction harmonized": true,
+    "marginaleffects multiplicity adjustment": true,
+    "marginaleffects percent change from marginal-mean ratio": true,
+    "marginaleffects avg_slopes integration": true,
+    "scientific ratio contrasts": true,
+    "formal estimand metadata": true,
+    "layered uncertainty router": true,
+    "trend exposes covariance and bootstrap uncertainty layers": true,
+    "quantitative turning points": true,
+    "local quadratic optimum refinement": true,
+    "diagnostic plan": true
+  },
+  "failures": []
+}
