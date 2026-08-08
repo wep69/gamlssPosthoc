@@ -9,8 +9,86 @@
 
 ```r
 # install.packages("remotes")
-remotes::install_github("wep69/gamlssPosthoc")
+remotes::install_github("wep69/gamlssPosthoc", build_vignettes = TRUE)
 ```
+
+`build_vignettes = TRUE` é recomendado, porque `install_github()` ignora vinhetas
+por padrão. A construção exige pandoc, que já vem embutido no RStudio. Fora dele,
+o comando acima falha.
+
+### Instalação com fallback
+
+Este bloco localiza o pandoc sozinho, instala as dependências que faltarem e,
+se ainda assim a vinheta não puder ser construída, reinstala sem ela em vez de
+abortar. Copie e cole inteiro:
+
+```r
+## 1. Garantir um espelho CRAN -----------------------------------------------
+## Sem isto, install.packages() falha em sessão não interativa (Rscript).
+cran <- getOption("repos")[["CRAN"]]
+if (is.null(cran) || !nzchar(cran) || identical(cran, "@CRAN@")) {
+  options(repos = c(CRAN = "https://cloud.r-project.org"))
+}
+
+## 2. Instalador -------------------------------------------------------------
+if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+
+## 3. Dependências opcionais (estão em Suggests, mas são necessárias na prática)
+deps <- c("gamlss", "gamlss.dist", "gamlss.inf",
+          "distributions3", "emmeans", "marginaleffects", "multcompView")
+faltando <- deps[!vapply(deps, requireNamespace, logical(1), quietly = TRUE)]
+if (length(faltando)) install.packages(faltando)
+
+## 4. Procurar pandoc, necessário apenas para a vinheta ----------------------
+tem_pandoc <- requireNamespace("rmarkdown", quietly = TRUE) &&
+  rmarkdown::pandoc_available()
+
+if (!tem_pandoc && requireNamespace("rmarkdown", quietly = TRUE)) {
+  candidatos <- c(
+    Sys.getenv("RSTUDIO_PANDOC"),
+    "C:/Program Files/Quarto/bin/tools",
+    "C:/Program Files/RStudio/resources/app/bin/quarto/bin/tools",
+    "/usr/lib/rstudio/bin/quarto/bin/tools",
+    "/Applications/RStudio.app/Contents/Resources/app/quarto/bin/tools"
+  )
+  exe <- if (.Platform$OS.type == "windows") "pandoc.exe" else "pandoc"
+  for (p in candidatos[nzchar(candidatos)]) {
+    if (file.exists(file.path(p, exe))) {
+      Sys.setenv(RSTUDIO_PANDOC = p)
+      rmarkdown::find_pandoc(cache = FALSE, dir = p)
+      break
+    }
+  }
+  tem_pandoc <- rmarkdown::pandoc_available()
+}
+
+## 5. Instalar, com fallback sem vinheta -------------------------------------
+instalado <- FALSE
+if (tem_pandoc) {
+  instalado <- tryCatch({
+    remotes::install_github("wep69/gamlssPosthoc", build_vignettes = TRUE)
+    TRUE
+  }, error = function(e) {
+    message("Construção da vinheta falhou: ", conditionMessage(e))
+    FALSE
+  })
+} else {
+  message("pandoc não encontrado; instalando sem a vinheta.")
+}
+
+if (!instalado) {
+  remotes::install_github("wep69/gamlssPosthoc", build_vignettes = FALSE)
+}
+
+## 6. Conferir ---------------------------------------------------------------
+library(gamlssPosthoc)
+packageVersion("gamlssPosthoc")
+vignette("workflow", package = "gamlssPosthoc")  # vazio se instalado sem vinheta
+```
+
+Se o passo 6 não abrir a vinheta, o pacote está instalado e plenamente
+funcional, apenas sem a documentação longa. Ela também pode ser lida direto no
+repositório, em `vignettes/workflow.Rmd`.
 
 **Inferência marginal e distribucional pós-GAMLSS com estimandos explícitos, zero-adjusted genérico, contrastes científicos e regressão quantitativa.**
 
