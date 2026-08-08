@@ -31,3 +31,19 @@ increasing order of complexity. The function does not itself verify formal
 nestedness; the user remains responsible for supplying scientifically and
 statistically comparable models.
 }
+\examples{
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(4)
+  d <- data.frame(dose = rep(c(0, 2, 4, 6, 8), each = 10))
+  d$y <- gamlss.dist::rGA(nrow(d),
+    mu = 2 + 0.6 * d$dose - 0.05 * d$dose^2, sigma = 0.2)
+  m1 <- gamlss::gamlss(y ~ dose, data = d, family = gamlss.dist::GA,
+                       trace = FALSE)
+  m2 <- gamlss::gamlss(y ~ dose + I(dose^2), data = d,
+                       family = gamlss.dist::GA, trace = FALSE)
+
+  # Models must be ordered from simpler to more complex
+  gamlss_poly_compare(linear = m1, quadratic = m2)
+}
+}

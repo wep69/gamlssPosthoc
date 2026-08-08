@@ -42,3 +42,17 @@ optional dependencies, and the requested estimand. The result documents
 which engines are eligible and explains the recommended engine and
 uncertainty layer before inference is run.
 }
+\examples{
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(2)
+  d <- data.frame(trt = factor(rep(c("A", "B"), each = 20)))
+  d$y <- gamlss.dist::rGA(nrow(d),
+    mu = ifelse(d$trt == "A", 2, 2.6), sigma = 0.3)
+  fit <- gamlss::gamlss(y ~ trt, data = d, family = gamlss.dist::GA,
+                        trace = FALSE)
+
+  # Which engine is eligible, and why the others are not
+  gamlss_posthoc_plan(fit, estimand = "mean")
+}
+}

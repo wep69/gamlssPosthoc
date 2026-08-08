@@ -30,3 +30,15 @@ A one-row data frame.
 Compatibility wrapper around \code{\link[=gamlss_posthoc_plan]{gamlss_posthoc_plan()}}. New code should use
 the richer diagnostic plan directly.
 }
+\examples{
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(1)
+  d <- data.frame(trt = factor(rep(c("A", "B"), each = 20)))
+  d$y <- gamlss.dist::rGA(nrow(d),
+    mu = ifelse(d$trt == "A", 2, 2.6), sigma = 0.3)
+  fit <- gamlss::gamlss(y ~ trt, data = d, family = gamlss.dist::GA,
+                        trace = FALSE)
+  gamlss_engine_info(fit, estimand = "parameter", what = "mu")
+}
+}

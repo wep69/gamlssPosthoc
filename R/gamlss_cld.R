@@ -12,6 +12,29 @@
 #'   `p.value` column is used as supplied.
 #' @param Letters Character vector passed to `multcompView::multcompLetters()`.
 #' @return The estimates data frame with an additional `.group` column.
+#' @details
+#' The letters are derived from the p-values stored in `x`. With bootstrap
+#' uncertainty, the smallest attainable p-value is bounded by the number of
+#' resamples, roughly `2/(B+1)` for a two-sided comparison, so a small `B`
+#' combined with a multiplicity adjustment can leave every level in the same
+#' group even when the estimates are far apart. Either raise `B` or use an
+#' analytic uncertainty layer when a compact letter display is the goal.
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("emmeans", quietly = TRUE) &&
+#'     requireNamespace("multcompView", quietly = TRUE)) {
+#'   set.seed(3)
+#'   d <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 25)))
+#'   d$y <- gamlss.dist::rGA(nrow(d),
+#'     mu = c(A = 2, B = 3, C = 4.5)[d$trt], sigma = 0.2)
+#'   fit <- gamlss::gamlss(y ~ trt, data = d, family = gamlss.dist::GA,
+#'                         trace = FALSE)
+#'   ph <- gamlss_posthoc(fit, specs = "trt", estimand = "parameter",
+#'                        what = "mu", population = "reference",
+#'                        contrast = "pairwise", data = d)
+#'   gamlss_cld(ph)
+#' }
 #' @export
 gamlss_cld <- function(x, alpha = 0.05, p_adjust = NULL,
                        Letters = c(letters, LETTERS, ".")) {

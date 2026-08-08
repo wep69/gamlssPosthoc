@@ -16,6 +16,19 @@
 #'   observation weights rule out the `emmeans` reference-grid engine.
 #' @param uncertainty Requested uncertainty layer.
 #' @return An object of class `gamlss_posthoc_plan`.
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(2)
+#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 20)))
+#'   d$y <- gamlss.dist::rGA(nrow(d),
+#'     mu = ifelse(d$trt == "A", 2, 2.6), sigma = 0.3)
+#'   fit <- gamlss::gamlss(y ~ trt, data = d, family = gamlss.dist::GA,
+#'                         trace = FALSE)
+#'
+#'   # Which engine is eligible, and why the others are not
+#'   gamlss_posthoc_plan(fit, estimand = "mean")
+#' }
 #' @export
 gamlss_posthoc_plan <- function(object, estimand = "parameter", what = "mu",
                                  contrast = "none", comparison = "difference",

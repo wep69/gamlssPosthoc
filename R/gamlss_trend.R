@@ -42,6 +42,25 @@
 #' @param seed Random seed.
 #' @return Object of class `gamlss_trend` with curve/derivative values and,
 #'   where requested, detected turning points or extrema.
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(5)
+#'   d <- data.frame(dose = rep(c(0, 2, 4, 6, 8), each = 10))
+#'   d$y <- gamlss.dist::rGA(nrow(d),
+#'     mu = 2 + 0.6 * d$dose - 0.05 * d$dose^2, sigma = 0.2)
+#'   fit <- gamlss::gamlss(y ~ dose + I(dose^2), data = d,
+#'                         family = gamlss.dist::GA, trace = FALSE)
+#'
+#'   # Fitted response curve over the dose range
+#'   tr <- gamlss_trend(fit, x = "dose", method = "curve", n = 25L,
+#'                      uncertainty = "none", data = d)
+#'   head(tr$values)
+#'
+#'   # Locally refined interior maximum
+#'   gamlss_trend(fit, x = "dose", method = "optimum", optimum = "maximum",
+#'                n = 25L, uncertainty = "none", data = d)
+#' }
 #' @export
 gamlss_trend <- function(object, x, by = NULL, at_x = NULL, n = 100L,
                          method = c("curve", "derivative", "turning_points", "optimum"),
