@@ -1,5 +1,8 @@
 
 ^.*\.Rproj$
+^\.github$
+^\.gitignore$
+^\.gitattributes$
 ^API_CONTRACT_VALIDATION\.md$
 ^CRAN_AUDIT\.md$
 ^IMPLEMENTATION_0\.2\.0\.md$

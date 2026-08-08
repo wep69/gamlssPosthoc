@@ -1,5 +1,17 @@
 # gamlssPosthoc 0.2.0
 
+<!-- badges: start -->
+[![R-CMD-check](https://github.com/wep69/gamlssPosthoc/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/wep69/gamlssPosthoc/actions/workflows/R-CMD-check.yaml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<!-- badges: end -->
+
+## Instalação
+
+```r
+# install.packages("remotes")
+remotes::install_github("wep69/gamlssPosthoc")
+```
+
 **Inferência marginal e distribucional pós-GAMLSS com estimandos explícitos, zero-adjusted genérico, contrastes científicos e regressão quantitativa.**
 
 `gamlssPosthoc` organiza o pós-processamento de modelos `gamlss`/`gamlssZadj` sem assumir que toda “média ajustada” representa a mesma quantidade. A versão 0.2.0 separa formalmente:
