@@ -17,6 +17,8 @@ Description: Provides a conservative post-hoc workflow for generalized additive
     The emphasis is on stable inference for means, contrasts, polynomial
     trends, and distribution-derived quantities in applied experiments.
 License: MIT + file LICENSE
+URL: https://github.com/wep69/gamlssPosthoc
+BugReports: https://github.com/wep69/gamlssPosthoc/issues
 Encoding: UTF-8
 Depends: R (>= 4.2.0)
 Imports:

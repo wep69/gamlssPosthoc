@@ -32,6 +32,14 @@ for location, scale and shape. \emph{Journal of the Royal Statistical Society:
 Series C (Applied Statistics)}, 54, 507--554.
 \doi{10.1111/j.1467-9876.2005.00510.x}
 }
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/wep69/gamlssPosthoc}
+  \item Report bugs at \url{https://github.com/wep69/gamlssPosthoc/issues}
+}
+
+}
 \author{
 \strong{Maintainer}: Walter Esfrain Pereira \email{walterufpb@yahoo.com.br} (\href{https://orcid.org/0000-0003-1085-0191}{ORCID}) [copyright holder]
 
