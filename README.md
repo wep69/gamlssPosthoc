@@ -5,46 +5,62 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 <!-- badges: end -->
 
-## Instalação
+**Marginal and distributional post-hoc inference after GAMLSS, with explicit
+estimands, a generic zero-adjusted engine, scientific contrast scales and
+quantitative regression.**
+
+`gamlssPosthoc` organises the post-processing of `gamlss`/`gamlssZadj` models
+without assuming that every "adjusted mean" represents the same quantity.
+Version 0.2.0 formally separates:
+
+1. **estimand**: a parameter, the mathematical mean, a variance, a quantile,
+   the exact mass at zero, or a custom function;
+2. **target population**: observed, balanced, or a reference profile;
+3. **comparison geometry**: pairwise, reference, sequential or polynomial;
+4. **scientific scale**: difference, ratio, log-ratio or percent change;
+5. **uncertainty**: delta, simulation, refit bootstrap, or point estimates
+   only.
+
+## Installation
 
 ```r
 # install.packages("remotes")
 remotes::install_github("wep69/gamlssPosthoc", build_vignettes = TRUE)
 ```
 
-`build_vignettes = TRUE` é recomendado, porque `install_github()` ignora vinhetas
-por padrão. A construção exige pandoc, que já vem embutido no RStudio. Fora dele,
-o comando acima falha.
+`build_vignettes = TRUE` is recommended, because `install_github()` skips
+vignettes by default. Building them requires pandoc, which ships inside
+RStudio. Outside RStudio the command above fails.
 
-### Instalação com fallback
+### Installation with fallback
 
-Este bloco localiza o pandoc sozinho, instala as dependências que faltarem e,
-se ainda assim a vinheta não puder ser construída, reinstala sem ela em vez de
-abortar. Copie e cole inteiro:
+The block below locates pandoc on its own, installs any missing dependencies
+and, if the vignettes still cannot be built, reinstalls without them instead
+of aborting. Copy and paste it whole:
 
 ```r
-## 1. Garantir um espelho CRAN -----------------------------------------------
-## Sem isto, install.packages() falha em sessão não interativa (Rscript).
+## 1. Make sure a CRAN mirror is set -----------------------------------------
+## Without this, install.packages() fails in a non-interactive session.
 cran <- getOption("repos")[["CRAN"]]
 if (is.null(cran) || !nzchar(cran) || identical(cran, "@CRAN@")) {
   options(repos = c(CRAN = "https://cloud.r-project.org"))
 }
 
-## 2. Instalador -------------------------------------------------------------
+## 2. Installer --------------------------------------------------------------
 if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
 
-## 3. Dependências opcionais (estão em Suggests, mas são necessárias na prática)
+## 3. Optional dependencies (in Suggests, but needed in practice) ------------
 deps <- c("gamlss", "gamlss.dist", "gamlss.inf",
           "distributions3", "emmeans", "marginaleffects", "multcompView")
-faltando <- deps[!vapply(deps, requireNamespace, logical(1), quietly = TRUE)]
-if (length(faltando)) install.packages(faltando)
+missing_deps <- deps[!vapply(deps, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_deps)) install.packages(missing_deps)
 
-## 4. Procurar pandoc, necessário apenas para a vinheta ----------------------
-tem_pandoc <- requireNamespace("rmarkdown", quietly = TRUE) &&
+## 4. Locate pandoc, needed only for the vignettes ---------------------------
+has_pandoc <- requireNamespace("rmarkdown", quietly = TRUE) &&
   rmarkdown::pandoc_available()
 
-if (!tem_pandoc && requireNamespace("rmarkdown", quietly = TRUE)) {
-  candidatos <- c(
+if (!has_pandoc && requireNamespace("rmarkdown", quietly = TRUE)) {
+  candidates <- c(
     Sys.getenv("RSTUDIO_PANDOC"),
     "C:/Program Files/Quarto/bin/tools",
     "C:/Program Files/RStudio/resources/app/bin/quarto/bin/tools",
@@ -52,65 +68,56 @@ if (!tem_pandoc && requireNamespace("rmarkdown", quietly = TRUE)) {
     "/Applications/RStudio.app/Contents/Resources/app/quarto/bin/tools"
   )
   exe <- if (.Platform$OS.type == "windows") "pandoc.exe" else "pandoc"
-  for (p in candidatos[nzchar(candidatos)]) {
+  for (p in candidates[nzchar(candidates)]) {
     if (file.exists(file.path(p, exe))) {
       Sys.setenv(RSTUDIO_PANDOC = p)
       rmarkdown::find_pandoc(cache = FALSE, dir = p)
       break
     }
   }
-  tem_pandoc <- rmarkdown::pandoc_available()
+  has_pandoc <- rmarkdown::pandoc_available()
 }
 
-## 5. Instalar, com fallback sem vinheta -------------------------------------
-instalado <- FALSE
-if (tem_pandoc) {
-  instalado <- tryCatch({
+## 5. Install, with a fallback without vignettes -----------------------------
+installed <- FALSE
+if (has_pandoc) {
+  installed <- tryCatch({
     remotes::install_github("wep69/gamlssPosthoc", build_vignettes = TRUE)
     TRUE
   }, error = function(e) {
-    message("Construção da vinheta falhou: ", conditionMessage(e))
+    message("Vignette build failed: ", conditionMessage(e))
     FALSE
   })
 } else {
-  message("pandoc não encontrado; instalando sem a vinheta.")
+  message("pandoc not found; installing without the vignettes.")
 }
 
-if (!instalado) {
+if (!installed) {
   remotes::install_github("wep69/gamlssPosthoc", build_vignettes = FALSE)
 }
 
-## 6. Conferir ---------------------------------------------------------------
+## 6. Check ------------------------------------------------------------------
 library(gamlssPosthoc)
 packageVersion("gamlssPosthoc")
-vignette("workflow", package = "gamlssPosthoc")  # vazio se instalado sem vinheta
+vignette(package = "gamlssPosthoc")  # empty if installed without vignettes
 ```
 
-Se o passo 6 não abrir a vinheta, o pacote está instalado e plenamente
-funcional, apenas sem a documentação longa. Ela também pode ser lida direto no
-repositório, em `vignettes/workflow.Rmd`.
+If step 6 does not show the vignettes, the package is installed and fully
+functional, only without the long documentation. It can also be read directly
+in the repository, under `vignettes/`.
 
-**Inferência marginal e distribucional pós-GAMLSS com estimandos explícitos, zero-adjusted genérico, contrastes científicos e regressão quantitativa.**
+## What changed in 0.2.0
 
-`gamlssPosthoc` organiza o pós-processamento de modelos `gamlss`/`gamlssZadj` sem assumir que toda “média ajustada” representa a mesma quantidade. A versão 0.2.0 separa formalmente:
+### 1. Generic zero-adjusted engine
 
-1. **estimando**: parâmetro, média matemática, variância, quantil, massa exata em zero ou função customizada;
-2. **população-alvo**: observada, balanceada ou perfil de referência;
-3. **geometria da comparação**: pareada, referência, sequencial ou polinomial;
-4. **escala científica**: diferença, razão, log-razão ou mudança percentual;
-5. **incerteza**: delta, simulação, bootstrap com refit ou apenas estimativa pontual.
-
-## O que mudou em 0.2.0
-
-### 1. Zero-adjusted genérico
-
-Para `gamlssZadj`, o pacote reconstrói a distribuição positiva completa com `gamlss.dist::GAMLSS()` quando possível. Se
+For `gamlssZadj`, the package rebuilds the complete positive distribution with
+`gamlss.dist::GAMLSS()` whenever possible. If
 
 \[
 P(Y=0)=h
 \]
 
-e a parte positiva é \(Y_+\), então
+and the positive part is \(Y_+\), then
 
 \[
 E(Y)=(1-h)E(Y_+)
@@ -120,7 +127,7 @@ E(Y)=(1-h)E(Y_+)
 Var(Y)=(1-h)Var(Y_+)+h(1-h)E(Y_+)^2.
 \]
 
-Os quantis são obtidos da distribuição completa:
+Quantiles come from the complete distribution:
 
 \[
 Q_Y(p)=0,\quad p\le h,
@@ -130,28 +137,40 @@ Q_Y(p)=0,\quad p\le h,
 Q_Y(p)=Q_+\left(\frac{p-h}{1-h}\right),\quad p>h.
 \]
 
-Isso remove a antiga limitação GA/GAF. Famílias positivas compatíveis, como `GG`, podem ser processadas sem assumir que `mu` seja a média.
+This removes the old GA/GAF restriction. Compatible positive families, such
+as `GG`, can be processed without assuming that `mu` is the mean.
 
-Para famílias locais/customizadas que não possam ser convertidas automaticamente, use `positive_dist_fun`.
+For local or custom families that cannot be converted automatically, use
+`positive_dist_fun`.
 
-### 2. Adapter de modelo
+### 2. Model adapter
 
-O núcleo não percorre mais uma lista fixa `mu/sigma/nu/tau`. Ele descobre `object$parameters`, fórmulas, links e smoothers por uma camada interna de adapter. Isso mantém o pacote utilizável com a infraestrutura atual do `gamlss` e facilita adapters futuros sem expor detalhes internos na API pública.
+The core no longer walks a fixed `mu/sigma/nu/tau` list. It discovers
+`object$parameters`, formulas, links and smoothers through an internal
+adapter layer. This keeps the package usable with the current `gamlss`
+infrastructure and makes future adapters easier without exposing internal
+details in the public API.
 
-### 3. Mais responsabilidade para `marginaleffects`
+### 3. More responsibility for `marginaleffects`
 
-Quando o alvo é um parâmetro distribucional de um `gamlss` ordinário, `marginaleffects` pode assumir:
+When the target is a distributional parameter of an ordinary `gamlss` fit,
+`marginaleffects` can take over:
 
-- `avg_predictions()` para padronização;
-- `avg_comparisons()` para diferenças, razões e log-razões; a mudança percentual é transformada a partir da razão das médias marginais, preservando o mesmo estimando do motor distribucional;
-- `avg_slopes()` para derivadas de primeira ordem em regressão quantitativa;
-- `inferences(method = "simulation")` quando solicitado e suportado.
+- `avg_predictions()` for standardization;
+- `avg_comparisons()` for differences, ratios and log-ratios; percent change
+  is transformed from the ratio of marginal means, preserving the same
+  estimand as the distribution engine;
+- `avg_slopes()` for first-order derivatives in quantitative regression;
+- `inferences(method = "simulation")` when requested and supported.
 
-No roteamento `engine = "auto"`, uma falha de capacidade em um objeto específico retorna ao motor de distribuição em vez de produzir uma resposta parcial silenciosa. Se `engine = "marginaleffects"` for solicitado explicitamente, a falha é reportada como erro para não mascarar uma incompatibilidade.
+Under `engine = "auto"` routing, a capability failure on a specific object
+falls back to the distribution engine instead of producing a silent partial
+answer. If `engine = "marginaleffects"` is requested explicitly, the failure
+is reported as an error so that an incompatibility is not masked.
 
-### 4. O estimando fica registrado
+### 4. The estimand is recorded
 
-Todo resultado de `gamlss_posthoc()` inclui `estimand_info`, por exemplo:
+Every result of `gamlss_posthoc()` includes `estimand_info`, for example:
 
 ```text
 Target:       marginal response mean including the zero mass
@@ -161,7 +180,7 @@ Weighting:    proportional
 Scale:        response/distribution
 ```
 
-### 5. Incerteza em camadas
+### 5. Layered uncertainty
 
 ```r
 uncertainty = "delta"
@@ -170,41 +189,43 @@ uncertainty = "bootstrap"
 uncertainty = "none"
 ```
 
-O bootstrap completo pode ser paramétrico, por casos ou por clusters. `auto` não dispara centenas de refits ocultos; `gamlss_posthoc_plan()` informa quando bootstrap explícito é recomendado para intervalos de estimandos derivados.
+The full bootstrap can be parametric, by cases or by clusters. `auto` does
+not fire hundreds of hidden refits; `gamlss_posthoc_plan()` reports when an
+explicit bootstrap is recommended for intervals of derived estimands.
 
-### 6. Contrastes em escala científica
+### 6. Contrasts on a scientific scale
 
-A pergunta “quais níveis?” é separada da pergunta “qual efeito?”.
+The question "which levels?" is separated from the question "which effect?".
 
 ```r
 contrast = "reference"
 comparison = "difference"
 ```
 
-ou
+or
 
 ```r
 contrast = "reference"
 comparison = "ratio"
 ```
 
-ou
+or
 
 ```r
 comparison = "percent_change"
 ```
 
-Assim, uma comparação pode ser apresentada diretamente como
+A comparison can therefore be presented directly as
 
 \[
 100\left(\frac{E(Y_A)}{E(Y_B)}-1\right),
 \]
 
-sem depender da interpretação implícita da escala de link.
+without depending on an implicit reading of the link scale.
 
-### 7. Regressão quantitativa ampliada
+### 7. Extended quantitative regression
 
-`gamlss_trend()` agora suporta:
+`gamlss_trend()` now supports:
 
 ```r
 method = "curve"
@@ -214,11 +235,15 @@ method = "turning_points"
 method = "optimum", optimum = "maximum"
 ```
 
-Com bootstrap, também pode construir bandas simultâneas a partir do máximo desvio padronizado entre curvas bootstrap. Para derivadas de primeira ordem de parâmetros ordinários, `delta` e `simulation` podem ser delegados a `marginaleffects`; para alvos derivados da distribuição, essas camadas recaem em bootstrap com refit.
+With the bootstrap it can also build simultaneous bands from the maximum
+standardized deviation across bootstrap curves. For first-order derivatives
+of ordinary parameters, `delta` and `simulation` can be delegated to
+`marginaleffects`; for distribution-derived targets, those layers fall back to
+the refit bootstrap.
 
-### 8. Diagnóstico verdadeiro
+### 8. A true diagnostic
 
-Antes de executar uma análise:
+Before running an analysis:
 
 ```r
 plan <- gamlss_posthoc_plan(
@@ -230,23 +255,24 @@ plan <- gamlss_posthoc_plan(
 print(plan)
 ```
 
-O diagnóstico mostra:
+The diagnostic shows:
 
-- classe e família;
-- parâmetros descobertos;
-- fórmulas e links;
-- smoothers por parâmetro;
-- dependências opcionais instaladas;
-- elegibilidade de `emmeans`, `marginaleffects` e motor distribucional;
-- engine recomendado;
-- camada de incerteza recomendada;
-- avisos estruturais.
+- class and family;
+- the discovered parameters;
+- formulas and links;
+- smoothers by parameter;
+- installed optional dependencies;
+- eligibility of `emmeans`, `marginaleffects` and the distribution engine;
+- the recommended engine;
+- the recommended uncertainty layer;
+- structural warnings.
 
-`gamlss_engine_info()` continua disponível como wrapper resumido para compatibilidade.
+`gamlss_engine_info()` remains available as a compact wrapper for backward
+compatibility.
 
 ---
 
-## Instalação local
+## Local installation from source
 
 ```r
 install.packages(c(
@@ -258,11 +284,12 @@ install.packages(c(
 install.packages("gamlssPosthoc_0.2.0.tar.gz", repos = NULL, type = "source")
 ```
 
-> O tarball para submissão ao CRAN deve ser criado por `R CMD build`, não por compactação manual.
+> The tarball for CRAN submission must be created by `R CMD build`, not by
+> manual compression.
 
 ---
 
-## Exemplo 1: contraste científico em Gamma
+## Example 1: a scientific contrast under Gamma
 
 ```r
 library(gamlss)
@@ -271,7 +298,7 @@ library(gamlssPosthoc)
 
 set.seed(1)
 D <- data.frame(trt = factor(rep(c("T0", "T1", "T2"), each = 50)))
-D$y <- rGA(nrow(D), mu = c(T0=3, T1=3.6, T2=4.4)[D$trt], sigma=.25)
+D$y <- rGA(nrow(D), mu = c(T0 = 3, T1 = 3.6, T2 = 4.4)[D$trt], sigma = .25)
 fit <- gamlss(y ~ trt, family = GA, data = D, trace = FALSE)
 
 ans <- gamlss_posthoc(
@@ -290,7 +317,7 @@ ans$estimates
 ans$contrasts
 ```
 
-## Exemplo 2: zero-adjusted Generalized Gamma
+## Example 2: zero-adjusted Generalized Gamma
 
 ```r
 library(gamlss.inf)
@@ -300,7 +327,7 @@ set.seed(2)
 D <- data.frame(trt = factor(rep(c("Control", "Bio"), each = 80)))
 mu <- ifelse(D$trt == "Control", 2, 3)
 h  <- ifelse(D$trt == "Control", .40, .18)
-ypos <- rGG(nrow(D), mu = mu, sigma=.35, nu=.7)
+ypos <- rGG(nrow(D), mu = mu, sigma = .35, nu = .7)
 D$y <- ifelse(rbinom(nrow(D), 1, h) == 1, 0, ypos)
 
 fitz <- gamlssZadj(
@@ -325,86 +352,102 @@ gamlss_posthoc(
 )
 ```
 
-## Exemplo 3: dose quantitativa
+## Example 3: a quantitative dose
 
 ```r
 set.seed(3)
 D <- data.frame(dose = seq(0, 150, length.out = 180))
-eta <- log(2) + .012*D$dose - .000045*D$dose^2
-D$biomass <- rGA(nrow(D), mu=exp(eta), sigma=.20)
-fit <- gamlss(biomass ~ dose + I(dose^2), family=GA, data=D, trace=FALSE)
-g <- seq(0, 150, length.out=151)
+eta <- log(2) + .012 * D$dose - .000045 * D$dose^2
+D$biomass <- rGA(nrow(D), mu = exp(eta), sigma = .20)
+fit <- gamlss(biomass ~ dose + I(dose^2), family = GA, data = D, trace = FALSE)
+g <- seq(0, 150, length.out = 151)
 
-gamlss_trend(fit, "dose", at_x=g,
-             method="derivative", derivative_order=1,
-             estimand="mean", uncertainty="none", data=D)
+gamlss_trend(fit, "dose", at_x = g,
+             method = "derivative", derivative_order = 1,
+             estimand = "mean", uncertainty = "none", data = D)
 
-gamlss_trend(fit, "dose", at_x=g,
-             method="turning_points",
-             estimand="mean", uncertainty="none", data=D)$special_points
+gamlss_trend(fit, "dose", at_x = g,
+             method = "turning_points",
+             estimand = "mean", uncertainty = "none", data = D)$special_points
 
-gamlss_trend(fit, "dose", at_x=g,
-             method="optimum", optimum="maximum",
-             estimand="mean", uncertainty="none", data=D)$special_points
+gamlss_trend(fit, "dose", at_x = g,
+             method = "optimum", optimum = "maximum",
+             estimand = "mean", uncertainty = "none", data = D)$special_points
 ```
 
-## `emmeans`: onde continua sendo preferido
+## `emmeans`: where it is still preferred
 
-O suporte documentado de `emmeans` a `gamlss` permanece focado em `what = "mu"`, `"sigma"`, `"nu"` ou `"tau"` e não cobre a parte selecionada quando ela contém um smoother como `pb()`. Além disso, nesta versão do `gamlssPosthoc`, o roteamento automático para `emmeans` exige `population = "reference"` e `comparison = "difference"`; isso impede que uma solicitação para a população observada seja silenciosamente trocada pelo reference grid do `emmeans`.
+The documented support of `emmeans` for `gamlss` remains focused on
+`what = "mu"`, `"sigma"`, `"nu"` or `"tau"`, and does not cover the selected
+component when it contains a smoother such as `pb()`. In addition, in this
+version of `gamlssPosthoc`, automatic routing to `emmeans` requires
+`population = "reference"` and `comparison = "difference"`; this prevents a
+request for the observed population from being silently replaced by the
+`emmeans` reference grid.
 
-Fonte técnica: <https://rvlenth.github.io/emmeans/articles/models.html>
+Technical source: <https://rvlenth.github.io/emmeans/articles/models.html>
 
-## `marginaleffects`: onde assume mais trabalho
+## `marginaleffects`: where it takes on more work
 
-`marginaleffects` oferece padronização de predições, comparações em múltiplas escalas, slopes e inferência por simulação. O pacote utiliza essas capacidades quando o alvo é um parâmetro de um `gamlss` ordinário e mantém teste de capacidade em runtime. Razões são razões de médias marginalizadas; `percent_change` é definido como `100 * (ratio - 1)`, não como a média de mudanças percentuais unidade a unidade.
+`marginaleffects` offers standardization of predictions, comparisons on
+several scales, slopes and simulation-based inference. The package uses those
+capabilities when the target is a parameter of an ordinary `gamlss` fit, and
+keeps a run-time capability test. Ratios are ratios of marginalized means;
+`percent_change` is defined as `100 * (ratio - 1)`, not as the average of
+unit-by-unit percent changes.
 
-Fontes técnicas:
+Technical sources:
 
 - <https://marginaleffects.com/man/r/predictions.html>
 - <https://marginaleffects.com/man/r/comparisons.html>
 - <https://marginaleffects.com/man/r/slopes.html>
 - <https://marginaleffects.com/man/r/inferences.html>
 
-## Arquivos de exemplo
+## Vignettes
 
-`inst/examples/` contém exemplos independentes de:
+- `workflow`: a short overview of the five decisions.
+- `gamlssPosthoc-foundations`: statistical background, one section per
+  function, worked examples and references.
 
-1. fatorial Gamma + `emmeans`;
-2. smoother `pb()`;
-3. GAF e potência média-variância;
-4. regressão polinomial quantitativa;
-5. contrastes polinomiais com espaçamento desigual;
+## Example files
+
+`inst/examples/` contains 14 standalone examples of:
+
+1. a Gamma factorial plus `emmeans`;
+2. the `pb()` smoother;
+3. GAF and the mean-variance power;
+4. quantitative polynomial regression;
+5. polynomial contrasts with unequal spacing;
 6. zero-adjusted Gamma;
-7. ZA-GAF customizada;
-8. `marginaleffects` opcional;
+7. a custom ZA-GAF;
+8. optional `marginaleffects`;
 9. compact letter display;
-10. **zero-adjusted GG genérico**;
-11. **diferença/razão/log-razão/%**;
-12. **derivadas, turning points e optimum**;
-13. **diagnóstico completo**;
-14. **marginaleffects como engine de comparação**.
+10. generic zero-adjusted GG;
+11. difference, ratio, log-ratio and percent change;
+12. derivatives, turning points and optimum;
+13. the complete diagnostic;
+14. `marginaleffects` as the comparison engine.
 
-## Validação
+## Validation
 
-O pacote inclui:
+The package ships a development preflight:
 
 ```r
 tools/cran_preflight.R
 ```
 
-que, em uma máquina com R e acesso às dependências, executa Roxygen, testes,
-vignette, `R CMD build` e `R CMD check --as-cran` sobre o tarball produzido.
+It regenerates the documentation with Roxygen, runs the tests, compiles and
+verifies both vignettes, builds the tarball with `R CMD build` and runs
+`R CMD check --as-cran` on it. Pandoc is located automatically, and the PDF
+manual step is skipped with a clear message when LaTeX is absent.
 
-No ambiente em que esta versão foi construída, a instalação temporária de R
-continua bloqueada por isolamento de rede. Por isso, os testes de runtime em R
-devem ser concluídos em uma máquina com R antes da submissão ao CRAN. Nesta
-refatoração foram executadas e aprovadas **20 invariantes arquiteturais** na
-auditoria estática e **19/19 verificações matemáticas independentes**. A suíte
-R preparada contém **39 blocos `test_that()`**, além dos 14 exemplos completos.
+Current status: **0 errors, 0 warnings, 1 note** (the standard "New
+submission" note), reproduced on nine environments: win-builder R-devel and
+R-release, the macOS builder on arm64, a local Windows install, and five
+GitHub Actions configurations covering R-devel, release and oldrel-1 on
+Ubuntu plus release on macOS and Windows. The macOS builder reports
+`Status: OK` with no note at all.
 
-A auditoria de dependências também foi atualizada contra o CRAN em 2026-08-08:
-`marginaleffects` 0.32.0, `emmeans` 2.0.4, `gamlss` 5.5-0,
-`gamlss.dist` 6.1-1, `gamlss.inf` 1.0-2 e `distributions3` 0.2.3. O requisito
-mínimo de `distributions3` foi corrigido para `>= 0.2.1`, versão em que a API
-`is_discrete()` já está disponível, evitando exigir uma versão inexistente no
-CRAN.
+The test suite contains **40 `test_that()` blocks**, and every exported
+function carries three or four executable examples spanning continuous,
+discrete and mixed response families (GA, NO, LOGNO, WEI, IG, PO and ZAGA).

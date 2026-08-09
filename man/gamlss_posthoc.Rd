@@ -182,9 +182,9 @@ if (requireNamespace("gamlss", quietly = TRUE) &&
     requireNamespace("gamlss.dist", quietly = TRUE) &&
     requireNamespace("emmeans", quietly = TRUE)) {
   set.seed(21)
-  d <- data.frame(g = factor(rep(c("baixo", "alto"), each = 30)))
+  d <- data.frame(g = factor(rep(c("low", "high"), each = 30)))
   d$y <- gamlss.dist::rNO(nrow(d), mu = 10,
-                          sigma = ifelse(d$g == "alto", 3, 1.2))
+                          sigma = ifelse(d$g == "high", 3, 1.2))
   fit <- gamlss::gamlss(y ~ 1, sigma.formula = ~ g,
                         family = gamlss.dist::NO, data = d, trace = FALSE)
   gamlss_posthoc(fit, specs = "g", estimand = "parameter", what = "sigma",

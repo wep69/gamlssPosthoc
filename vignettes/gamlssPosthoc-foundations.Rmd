@@ -1,0 +1,2665 @@
+---
+title: "Foundations, functions and examples of gamlssPosthoc"
+author: "Walter Esfrain Pereira"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Foundations, functions and examples of gamlssPosthoc}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>",
+                      fig.width = 7, fig.height = 4.5)
+library(gamlssPosthoc)
+has_core <- requireNamespace("gamlss", quietly = TRUE) &&
+  requireNamespace("gamlss.dist", quietly = TRUE)
+has_dist <- has_core && requireNamespace("distributions3", quietly = TRUE)
+has_zadj <- has_dist && requireNamespace("gamlss.inf", quietly = TRUE)
+has_emm  <- has_core && requireNamespace("emmeans", quietly = TRUE)
+has_cld  <- has_emm && requireNamespace("multcompView", quietly = TRUE)
+if (has_core) {
+  suppressMessages(library(gamlss))
+  suppressMessages(library(gamlss.dist))
+}
+if (has_zadj) suppressMessages(library(gamlss.inf))
+```
+
+**Reference version:** `gamlssPosthoc 0.2.0`
+
+---
+
+## Contents
+
+1. Introduction
+2. Why `gamlssPosthoc` was written
+3. Statistical foundations
+4. Conceptual architecture of the package
+5. Installation and dependencies
+6. `gamlss_posthoc()`
+7. `gamlss_posthoc_plan()`
+8. `gamlss_distribution_summary()`
+9. `gamlss_trend()`
+10. `gamlss_poly_compare()`
+11. `gamlss_cld()`
+12. `gamlss_engine_info()`
+13. Recommended analysis workflows
+14. Zero-adjusted models
+15. Comparisons, multiplicity and interpretation
+16. Quantitative regression, derivatives and optima
+17. Uncertainty: delta, simulation and bootstrap
+18. Good practice and limitations
+19. Summary of the functions
+20. References
+
+---
+
+# 1. Introduction
+
+**Generalized Additive Models for Location, Scale and Shape (GAMLSS)** widen
+the scope of generalized linear models considerably, because they allow more
+than one parameter of the response distribution to be modelled as a function
+of covariates. Instead of restricting inference to a conditional mean, a
+GAMLSS model can describe location, dispersion, skewness, kurtosis or other
+distribution-specific parameters at the same time (Rigby & Stasinopoulos,
+2005; Stasinopoulos & Rigby, 2007; Stasinopoulos, Rigby & De Bastiani, 2018).
+
+In general terms,
+
+\[
+Y_i \sim D(\theta_{1i},\theta_{2i},\ldots,\theta_{pi}),
+\]
+
+where each parameter may have its own predictor,
+
+\[
+g_k(\theta_{ki})
+=
+\eta_{ki}
+=
+\mathbf{x}_{ki}^{\mathsf T}\boldsymbol{\beta}_k
++
+\sum_j f_{kj}(z_{kji}),
+\qquad k=1,\ldots,p.
+\]
+
+In classical `gamlss`, the parameters are conventionally named `mu`, `sigma`,
+`nu` and `tau`, although their interpretation depends on the chosen family.
+Therefore, **`mu` must not be read automatically as the mean of the
+response**. In some families `mu` is the mean; in others it is a median, a
+location parameter, or something else entirely (Rigby et al., 2019).
+
+That flexibility creates a post-modelling problem: classical
+"mean comparison" procedures do not always correspond to the scientific
+quantity the researcher intends to compare.
+
+The `gamlssPosthoc` package was written to organise this stage. Its
+philosophy is:
+
+\[
+\boxed{
+\text{model}
+\rightarrow
+\text{predicted distribution}
+\rightarrow
+\text{estimand}
+\rightarrow
+\text{target population}
+\rightarrow
+\text{contrast}
+\rightarrow
+\text{uncertainty}
+}
+\]
+
+Instead of asking only "what are the adjusted means?", the package forces a
+sharper question:
+
+> **Which quantity of the distribution is to be compared, for which
+> population, and on which scientific scale?**
+
+---
+
+# 2. Why `gamlssPosthoc` was written
+
+## 2.1. Limitations of a conventional post-hoc comparison
+
+In simple linear models, comparing adjusted means is usually straightforward.
+In GAMLSS, however, there are at least four difficulties.
+
+### 2.1.1. The mean may depend on several parameters
+
+Consider a distribution in which
+
+\[
+E(Y_i)=m(\mu_i,\sigma_i,\nu_i,\tau_i).
+\]
+
+Comparing `mu` alone need not be equivalent to comparing
+
+\[
+E(Y_i).
+\]
+
+The difference becomes even more important in zero-adjusted distributions,
+where the marginal mean depends simultaneously on the continuous part and on
+the mass at zero.
+
+### 2.1.2. Support for `gamlss` in `emmeans` is partial
+
+`emmeans` is a well-established tool for estimated marginal means and
+contrasts (Lenth, 2016). For `gamlss` objects, however, its current support
+is centred on one parameter at a time (`mu`, `sigma`, `nu` or `tau`), and it
+does not cover the selected submodel when that submodel contains smoothers
+such as `pb()`.
+
+A model such as
+
+```{r illustrative-01, eval=FALSE}
+gamlss(
+  y ~ treatment + pb(dose),
+  sigma.formula = ~ treatment,
+  family = GA,
+  data = dat
+)
+```
+
+should therefore not be forced through an EMM interface on the `mu` component
+merely because that strategy works for `lm()` or `glm()`.
+
+### 2.1.3. A "marginal mean" depends on the population it is marginalised over
+
+A standardized mean can be defined over:
+
+- the observed empirical distribution of the covariates;
+- an artificial balanced population;
+- a reference profile.
+
+These estimands are not necessarily equal.
+
+### 2.1.4. The scientific scale may differ from the link scale
+
+With a log link, for instance, a natural contrast on the linear scale induces
+ratios on the response scale. The researcher may nevertheless want,
+explicitly,
+
+\[
+\Delta = m_A-m_B,
+\]
+
+\[
+R = \frac{m_A}{m_B},
+\]
+
+\[
+\log R = \log(m_A)-\log(m_B),
+\]
+
+or
+
+\[
+PC =
+100\left(\frac{m_A}{m_B}-1\right).
+\]
+
+`gamlssPosthoc` keeps these choices separate.
+
+---
+
+# 3. Statistical foundations
+
+## 3.1. GAMLSS as distributional regression
+
+The GAMLSS principle is to model the complete conditional distribution of the
+response. This perspective is often called **distributional regression**,
+because the target is no longer only \(E(Y\mid X)\) but the whole set of
+parameters of \(F(Y\mid X)\) (Stasinopoulos, Rigby & De Bastiani, 2018;
+Umlauf, Klein & Zeileis, 2018).
+
+For a generic parameter \(\theta_k\),
+
+\[
+g_k(\theta_{ki})
+=
+\eta_{ki}.
+\]
+
+The predictor may contain:
+
+- linear effects;
+- factors;
+- interactions;
+- polynomials;
+- P-splines;
+- random effects;
+- other additive terms.
+
+This structure makes it inadequate to assume that all post-model inference
+can be reduced to a table of means.
+
+---
+
+## 3.2. Estimand
+
+An **estimand** is the statistical quantity the analysis intends to estimate.
+
+In `gamlssPosthoc`, the main estimands are:
+
+```{r illustrative-02, eval=FALSE}
+estimand = "parameter"
+estimand = "mean"
+estimand = "variance"
+estimand = "quantile"
+estimand = "prob_zero"
+estimand = "custom"
+```
+
+### Distributional parameter
+
+\[
+T(F_i)=\theta_{ki}.
+\]
+
+For example, `what = "sigma"` requests inference on the dispersion parameter
+of the model.
+
+### Mean of the distribution
+
+\[
+T(F_i)=E(Y_i).
+\]
+
+### Variance
+
+\[
+T(F_i)=\operatorname{Var}(Y_i).
+\]
+
+### Quantile of order \(p\)
+
+\[
+T(F_i)=Q_i(p)=F_i^{-1}(p).
+\]
+
+### Exact mass at zero
+
+\[
+T(F_i)=P(Y_i=0).
+\]
+
+It is important to distinguish
+
+\[
+P(Y=0)
+\]
+
+from
+
+\[
+F(0)=P(Y\le 0).
+\]
+
+For a standard Normal continuous variable, for instance,
+
+\[
+F(0)=0.5,
+\]
+
+but
+
+\[
+P(Y=0)=0.
+\]
+
+The package uses the **exact point mass** for `prob_zero`.
+
+---
+
+## 3.3. Standardization over a target population
+
+If \(T(F_{ig})\) is the estimand predicted for unit \(i\) under group \(g\),
+a standardized mean can be written as
+
+\[
+\bar T_g
+=
+\frac{\sum_{i=1}^{N} w_i T(F_{ig})}
+{\sum_{i=1}^{N}w_i}.
+\]
+
+The package allows three conceptual populations.
+
+### `population = "observed"`
+
+The observed covariates are preserved and the focal group is changed
+counterfactually. This strategy corresponds to a form of **g-computation, or
+standardization over the empirical distribution of the covariates**.
+
+### `population = "balanced"`
+
+A balanced population is built over the relevant combinations of the factors.
+
+### `population = "reference"`
+
+A reference grid is used, an approach especially related to the concept of
+estimated marginal means (Lenth, 2016).
+
+For this reason, two analyses may produce different results and both still be
+correct: they may be estimating quantities for different target populations.
+
+---
+
+## 3.4. Contrasts on a scientific scale
+
+`gamlssPosthoc` separates:
+
+1. **who is compared**;
+2. **how the effect is expressed**.
+
+### Geometry
+
+```{r illustrative-03, eval=FALSE}
+contrast = "pairwise"
+contrast = "reference"
+contrast = "sequential"
+contrast = "poly"
+contrast = "opoly"
+```
+
+### Scale
+
+```{r illustrative-04, eval=FALSE}
+comparison = "difference"
+comparison = "ratio"
+comparison = "log_ratio"
+comparison = "percent_change"
+```
+
+For two groups \(A\) and \(B\):
+
+### Difference
+
+\[
+C_{\Delta}=T_A-T_B.
+\]
+
+### Ratio
+
+\[
+C_R=\frac{T_A}{T_B}.
+\]
+
+### Log-ratio
+
+\[
+C_{\log R}
+=
+\log\left(\frac{T_A}{T_B}\right).
+\]
+
+### Percent change
+
+\[
+C_{\%}
+=
+100
+\left(
+\frac{T_A}{T_B}-1
+\right).
+\]
+
+This definition avoids ambiguous inferences produced only by the link scale.
+
+---
+
+## 3.5. Zero-adjusted distributions
+
+Semicontinuous responses may contain a point mass at zero and a continuous
+distribution for the positive values. This structure is common in
+biological, environmental and agricultural applications (Stasinopoulos et
+al., 2023).
+
+Consider:
+
+\[
+P(Y=0)=h,
+\]
+
+and
+
+\[
+Y_+ \sim F_+,
+\qquad Y_+>0.
+\]
+
+The complete distribution is then
+
+\[
+P(Y=0)=h,
+\]
+
+\[
+f_Y(y)
+=
+(1-h)f_+(y),
+\qquad y>0.
+\]
+
+### Mean
+
+If
+
+\[
+m_+=E(Y_+),
+\]
+
+then
+
+\[
+\boxed{
+E(Y)
+=
+(1-h)m_+
+}
+\]
+
+### Variance
+
+If
+
+\[
+v_+=\operatorname{Var}(Y_+),
+\]
+
+then
+
+\[
+\boxed{
+\operatorname{Var}(Y)
+=
+(1-h)v_+
++
+h(1-h)m_+^2
+}
+\]
+
+### Quantile
+
+\[
+Q_Y(p)=0,
+\qquad p\le h,
+\]
+
+and, for \(p>h\),
+
+\[
+\boxed{
+Q_Y(p)
+=
+Q_+
+\left(
+\frac{p-h}{1-h}
+\right)
+}
+\]
+
+`gamlssPosthoc` applies this logic generically whenever the positive
+distribution can be reconstructed by `gamlss.dist::GAMLSS()` and
+`distributions3`.
+
+---
+
+## 3.6. A special case: Gamma and GAF
+
+In the Gamma family `GA` of `gamlss.dist`,
+
+\[
+E(Y)=\mu,
+\]
+
+\[
+\operatorname{Var}(Y)=\sigma^2\mu^2.
+\]
+
+In `GAF`, the exponent of the mean-variance relationship is flexible:
+
+\[
+E(Y)=\mu,
+\]
+
+\[
+\boxed{
+\operatorname{Var}(Y)
+=
+\sigma^2\mu^\nu
+}
+\]
+
+(Enki et al., 2017; documentation of `gamlss.dist::GAF`).
+
+When
+
+\[
+\nu=2,
+\]
+
+the mean-variance relationship coincides with the conventional Gamma.
+
+The `GAF` documentation also stresses the possibly high correlation between
+\(\sigma\) and \(\nu\), which is why inference on dispersion and power
+parameters must be interpreted with care.
+
+---
+
+# 4. Conceptual architecture of the package
+
+Version 0.2.0 uses three engines.
+
+## 4.1. `emmeans`
+
+Preferred when:
+
+- the target is a simple distributional parameter;
+- the selected model contains no smoother;
+- the desired population is explicitly a reference grid;
+- the contrast is compatible with the `emmeans` mechanism.
+
+Using this tool preserves the advantages of the EMM and contrast
+infrastructure developed by Lenth (2016).
+
+---
+
+## 4.2. `marginaleffects`
+
+It can take greater responsibility when:
+
+- the target is an ordinary distributional parameter;
+- the analysis requires standardization by predictions;
+- comparisons on different scales are wanted;
+- a first-order derivative is wanted;
+- the model API adequately supports the operation.
+
+The `marginaleffects` paradigm treats predictions, slopes, comparisons and
+other quantities as substantively interpretable transformations of the model
+predictions (Arel-Bundock, Greifer & Heiss, 2024).
+
+---
+
+## 4.3. Distribution engine
+
+This is the most general option when the estimand depends on:
+
+- the complete distribution;
+- multiple parameters;
+- the mass at zero;
+- smoothers;
+- quantiles or variances;
+- a custom function.
+
+The central principle is:
+
+\[
+(\hat\theta_1,\ldots,\hat\theta_p)
+\longrightarrow
+\widehat F
+\longrightarrow
+T(\widehat F).
+\]
+
+This approach is coherent with the philosophy of distributional regression:
+the predicted distribution is obtained first, and the scientific quantity of
+interest is computed afterwards.
+
+---
+
+# 5. Installation and dependencies
+
+A complete installation may require:
+
+```{r illustrative-05, eval=FALSE}
+install.packages(c(
+  "gamlss",
+  "gamlss.dist",
+  "distributions3",
+  "gamlss.inf",
+  "emmeans",
+  "marginaleffects",
+  "future",
+  "future.apply",
+  "multcompView"
+))
+```
+
+After installing the package:
+
+```{r illustrative-06, eval=FALSE}
+library(gamlssPosthoc)
+library(gamlss)
+library(gamlss.dist)
+```
+
+The additional dependencies are optional and are activated according to the
+engine or functionality requested.
+
+---
+
+# 6. `gamlss_posthoc()`
+
+## 6.1. Purpose
+
+`gamlss_posthoc()` is the central function of the package.
+
+It integrates:
+
+- the choice of estimand;
+- the definition of the target population;
+- weighting;
+- engine routing;
+- computation of contrasts;
+- the choice of scientific scale;
+- uncertainty propagation.
+
+### Main signature
+
+```{r illustrative-07, eval=FALSE}
+gamlss_posthoc(
+  object,
+  specs,
+  by = NULL,
+  estimand = c(
+    "parameter", "mean", "variance",
+    "quantile", "prob_zero", "custom"
+  ),
+  what = "mu",
+  contrast = c(
+    "none", "pairwise", "reference",
+    "sequential", "poly", "opoly"
+  ),
+  comparison = c(
+    "difference", "ratio",
+    "log_ratio", "percent_change"
+  ),
+  adjust = "tukey",
+  at = list(),
+  population = NULL,
+  weights = NULL,
+  grid = NULL,
+  engine = c(
+    "auto", "emmeans",
+    "marginaleffects", "distribution"
+  ),
+  uncertainty = c(
+    "auto", "delta",
+    "simulation", "bootstrap", "none"
+  ),
+  bootstrap = c("parametric", "case", "cluster"),
+  B = 499L,
+  cluster = NULL,
+  ref = 1L,
+  scores = NULL,
+  degree = NULL,
+  prob = 0.5,
+  custom_fun = NULL,
+  positive_dist_fun = NULL,
+  positive_mean_fun = NULL,
+  data = NULL,
+  refit_fun = NULL,
+  simulate_fun = NULL,
+  parallel = FALSE,
+  cores = 2L,
+  seed = 1234,
+  keep_draws = FALSE,
+  ...
+)
+```
+
+---
+
+## 6.2. Structure of the returned object
+
+The result has class `gamlss_posthoc` and contains, among others:
+
+```{r illustrative-08, eval=FALSE}
+result$estimates
+result$contrasts
+result$engine
+result$estimand
+result$estimand_info
+result$population
+result$weighting
+result$uncertainty_method
+```
+
+When requested:
+
+```{r illustrative-09, eval=FALSE}
+result$draws
+```
+
+may contain bootstrap draws.
+
+---
+
+## 6.3. Worked example: a Gamma factorial experiment
+
+In this example, three treatments are evaluated under two water regimes.
+
+```{r factorial-gamma, eval=has_core}
+library(gamlss)
+library(gamlss.dist)
+library(gamlssPosthoc)
+
+set.seed(101)
+
+dat <- expand.grid(
+  treatment = factor(c("Control", "BioA", "BioB")),
+  water = factor(c("100_ETc", "70_ETc")),
+  block = factor(1:6),
+  replicate = 1:4
+)
+
+eta <- with(
+  dat,
+  log(4.0) +
+    0.18 * (treatment == "BioA") +
+    0.32 * (treatment == "BioB") -
+    0.25 * (water == "70_ETc") -
+    0.08 * (treatment == "BioB" & water == "70_ETc")
+)
+
+mu <- exp(eta)
+
+dat$biomass <- rGA(
+  nrow(dat),
+  mu = mu,
+  sigma = 0.22
+)
+
+fit <- gamlss(
+  biomass ~ treatment * water,
+  sigma.formula = ~ water,
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+```
+
+### Marginal means of the response
+
+Because `GA` has \(E(Y)=\mu\), the mean of the distribution coincides with the
+`mu` parameter. Even so, using `estimand = "mean"` makes the scientific
+intention explicit.
+
+```{r marginal-means, eval=has_core}
+res_mean <- gamlss_posthoc(
+  fit,
+  specs = "treatment",
+  by = "water",
+  estimand = "mean",
+  population = "observed",
+  contrast = "pairwise",
+  comparison = "difference",
+  uncertainty = "none",
+  data = dat
+)
+
+res_mean
+res_mean$estimates
+res_mean$contrasts
+```
+
+### Ratio of means
+
+```{r ratio-of-means, eval=has_core}
+res_ratio <- gamlss_posthoc(
+  fit,
+  specs = "treatment",
+  by = "water",
+  estimand = "mean",
+  population = "observed",
+  contrast = "reference",
+  comparison = "ratio",
+  ref = 1,
+  uncertainty = "none",
+  data = dat
+)
+
+res_ratio$contrasts
+```
+
+### Percent change
+
+```{r percent-change, eval=has_core}
+res_pc <- gamlss_posthoc(
+  fit,
+  specs = "treatment",
+  by = "water",
+  estimand = "mean",
+  population = "observed",
+  contrast = "reference",
+  comparison = "percent_change",
+  ref = 1,
+  uncertainty = "none",
+  data = dat
+)
+
+res_pc$contrasts
+```
+
+An estimate of 25 for `percent_change` should be read as:
+
+> the predicted marginal mean was approximately 25% higher than the reference
+> category, under the declared target population.
+
+---
+
+## 6.4. Comparing `sigma`
+
+The post-hoc analysis may also refer to another parameter of the
+distribution.
+
+```{r compare-sigma, eval=has_emm}
+res_sigma <- gamlss_posthoc(
+  fit,
+  specs = "water",
+  estimand = "parameter",
+  what = "sigma",
+  population = "reference",
+  contrast = "pairwise",
+  comparison = "difference",
+  engine = "emmeans",
+  uncertainty = "delta",
+  data = dat
+)
+
+res_sigma
+```
+
+In this case, mean biomass is not being compared. The `sigma` parameter is.
+
+---
+
+## 6.5. Quantiles
+
+To compare predictive medians:
+
+```{r median, eval=has_dist}
+res_median <- gamlss_posthoc(
+  fit,
+  specs = "treatment",
+  by = "water",
+  estimand = "quantile",
+  prob = 0.50,
+  population = "observed",
+  contrast = "pairwise",
+  comparison = "difference",
+  engine = "distribution",
+  uncertainty = "none",
+  data = dat
+)
+
+res_median$estimates
+```
+
+For the 90th percentile:
+
+```{r quantile-90, eval=has_dist}
+res_q90 <- gamlss_posthoc(
+  fit,
+  specs = "treatment",
+  estimand = "quantile",
+  prob = 0.90,
+  population = "observed",
+  engine = "distribution",
+  uncertainty = "none",
+  data = dat
+)
+```
+
+---
+
+## 6.6. Variance
+
+```{r variance, eval=has_dist}
+res_var <- gamlss_posthoc(
+  fit,
+  specs = "treatment",
+  by = "water",
+  estimand = "variance",
+  population = "observed",
+  contrast = "pairwise",
+  comparison = "ratio",
+  uncertainty = "none",
+  data = dat
+)
+```
+
+This analysis can answer a question that differs from a comparison of means:
+
+> do particular treatments change the heterogeneity of the response, even
+> when the mean changes little?
+
+---
+
+## 6.7. Custom estimand
+
+The interface allows user-defined derived functions.
+
+For example, when the custom function can be computed from the distributional
+predictions:
+
+```{r illustrative-18, eval=FALSE}
+res_custom <- gamlss_posthoc(
+  fit,
+  specs = "treatment",
+  estimand = "custom",
+  custom_fun = function(...) {
+    # user function compatible with the interface
+    # of the custom estimand
+  },
+  population = "observed",
+  engine = "distribution",
+  uncertainty = "none",
+  data = dat
+)
+```
+
+This facility is appropriate when the scientific question does not coincide
+with the native estimands.
+
+---
+
+# 7. `gamlss_posthoc_plan()`
+
+## 7.1. Purpose
+
+`gamlss_posthoc_plan()` should be used **before** complex analyses.
+
+It inspects:
+
+- the model class;
+- the family;
+- the available parameters;
+- the formulas;
+- the links;
+- the smoothers;
+- the installed dependencies;
+- engine eligibility;
+- the recommended uncertainty;
+- structural warnings.
+
+### Signature
+
+```{r illustrative-19, eval=FALSE}
+gamlss_posthoc_plan(
+  object,
+  estimand = "parameter",
+  what = "mu",
+  contrast = "none",
+  comparison = "difference",
+  population = "observed",
+  weights = NULL,
+  uncertainty = "auto"
+)
+```
+
+---
+
+## 7.2. Worked example with `pb()`
+
+```{r pb-data, eval=has_core}
+library(gamlss)
+library(gamlss.dist)
+library(gamlssPosthoc)
+
+set.seed(202)
+
+n <- 180
+
+dat <- data.frame(
+  dose = runif(n, 0, 150),
+  treatment = factor(
+    sample(c("A", "B"), n, replace = TRUE)
+  )
+)
+
+mu <- with(
+  dat,
+  exp(
+    log(2.2) +
+      0.010 * dose -
+      0.00004 * dose^2 +
+      0.18 * (treatment == "B")
+  )
+)
+
+dat$biomass <- rGA(
+  n,
+  mu = mu,
+  sigma = 0.25
+)
+
+fit_pb <- gamlss(
+  biomass ~ treatment + pb(dose),
+  sigma.formula = ~ treatment,
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+```
+
+Diagnostic for `mu`:
+
+```{r plan-mu, eval=has_core}
+plan_mu <- gamlss_posthoc_plan(
+  fit_pb,
+  estimand = "parameter",
+  what = "mu",
+  population = "reference",
+  uncertainty = "auto"
+)
+
+print(plan_mu)
+```
+
+The plan is expected to identify the smoother in the `mu` submodel and to
+avoid recommending `emmeans` for that component.
+
+Diagnostic for `sigma`:
+
+```{r plan-sigma, eval=has_core}
+plan_sigma <- gamlss_posthoc_plan(
+  fit_pb,
+  estimand = "parameter",
+  what = "sigma",
+  population = "reference",
+  uncertainty = "auto"
+)
+
+print(plan_sigma)
+```
+
+Because `sigma.formula` contains no `pb()`, eligibility may differ.
+
+---
+
+## 7.3. Why the plan matters
+
+Automatic engine selection should not be treated as a black box. The plan
+lets the analyst see in advance:
+
+\[
+\text{requested estimand}
++
+\text{model structure}
++
+\text{population}
++
+\text{uncertainty}
+\Rightarrow
+\text{recommended strategy}.
+\]
+
+This makes the analysis auditable.
+
+---
+
+# 8. `gamlss_distribution_summary()`
+
+## 8.1. Purpose
+
+`gamlss_distribution_summary()` returns plug-in summaries of the predicted
+distribution:
+
+- mean;
+- variance;
+- standard deviation;
+- exact mass at zero;
+- requested quantiles.
+
+### Signature
+
+```{r illustrative-23, eval=FALSE}
+gamlss_distribution_summary(
+  object,
+  newdata,
+  probs = c(0.025, 0.5, 0.975),
+  data = NULL,
+  positive_dist_fun = NULL
+)
+```
+
+---
+
+## 8.2. Worked example: ordinary Gamma
+
+```{r gamma-summary, eval=has_dist}
+set.seed(303)
+
+dat <- data.frame(
+  N = runif(100, 40, 160)
+)
+
+dat$yield <- rGA(
+  100,
+  mu = exp(2.0 + 0.004 * dat$N),
+  sigma = 0.18
+)
+
+fit_ga <- gamlss(
+  yield ~ N,
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+
+newd <- data.frame(
+  N = c(50, 100, 150)
+)
+
+sum_ga <- gamlss_distribution_summary(
+  fit_ga,
+  newdata = newd,
+  probs = c(0.05, 0.50, 0.95),
+  data = dat
+)
+
+sum_ga
+```
+
+For each value of `N`, the function returns a description of the predicted
+distribution, not merely a single parameter.
+
+---
+
+## 8.3. Worked example: zero-adjusted Generalized Gamma
+
+This is a case where the advantage of the distribution engine becomes
+evident.
+
+```{r zagg-data, eval=has_zadj}
+library(gamlss.inf)
+
+set.seed(304)
+
+dat <- data.frame(
+  treatment = factor(
+    rep(c("Control", "Inoculated"), each = 100)
+  )
+)
+
+mu <- ifelse(
+  dat$treatment == "Control",
+  1.8,
+  3.0
+)
+
+h <- ifelse(
+  dat$treatment == "Control",
+  0.45,
+  0.20
+)
+
+positive_part <- rGG(
+  nrow(dat),
+  mu = mu,
+  sigma = 0.35,
+  nu = 0.7
+)
+
+dat$nodules <- ifelse(
+  rbinom(nrow(dat), 1, h) == 1,
+  0,
+  positive_part
+)
+
+fit_zagg <- gamlssZadj(
+  y = nodules,
+  mu.formula = ~ treatment,
+  sigma.formula = ~ 1,
+  nu.formula = ~ 1,
+  xi0.formula = ~ treatment,
+  family = GG,
+  data = dat,
+  trace = FALSE
+)
+```
+
+Creating predictions:
+
+```{r zagg-summary, eval=has_zadj}
+newd <- data.frame(
+  treatment = factor(
+    c("Control", "Inoculated"),
+    levels = levels(dat$treatment)
+  )
+)
+
+sum_zagg <- gamlss_distribution_summary(
+  fit_zagg,
+  newdata = newd,
+  probs = c(0.10, 0.50, 0.90),
+  data = dat
+)
+
+sum_zagg
+```
+
+The function automatically combines
+
+\[
+P(Y=0)=\xi_0
+\]
+
+with the positive `GG` distribution.
+
+---
+
+## 8.4. Agronomic interpretation
+
+If the inoculated treatment reduces the mass at zero and increases the
+positive part, the marginal mean may change through two mechanisms:
+
+\[
+\text{treatment}
+\rightarrow
+P(Y>0)
+\]
+
+and
+
+\[
+\text{treatment}
+\rightarrow
+E(Y\mid Y>0).
+\]
+
+This decomposition is biologically more informative than a simple arithmetic
+mean of the observed data.
+
+---
+
+# 9. `gamlss_trend()`
+
+## 9.1. Purpose
+
+`gamlss_trend()` was developed for quantitative predictors.
+
+It allows:
+
+```{r illustrative-27, eval=FALSE}
+method = "curve"
+method = "derivative"
+method = "turning_points"
+method = "optimum"
+```
+
+In addition:
+
+```{r illustrative-28, eval=FALSE}
+derivative_order = 1
+derivative_order = 2
+```
+
+and
+
+```{r illustrative-29, eval=FALSE}
+optimum = "maximum"
+optimum = "minimum"
+```
+
+### Simplified signature
+
+```{r illustrative-30, eval=FALSE}
+gamlss_trend(
+  object,
+  x,
+  by = NULL,
+  at_x = NULL,
+  n = 100L,
+  method = c(
+    "curve", "derivative",
+    "turning_points", "optimum"
+  ),
+  derivative_order = 1L,
+  optimum = c("maximum", "minimum"),
+  band = c("pointwise", "simultaneous"),
+  estimand = "mean",
+  what = "mu",
+  engine = c(
+    "auto", "marginaleffects", "distribution"
+  ),
+  population = NULL,
+  weights = NULL,
+  data = NULL,
+  uncertainty = c(
+    "auto", "delta",
+    "simulation", "bootstrap", "none"
+  ),
+  bootstrap = "case",
+  B = 499L,
+  ...
+)
+```
+
+---
+
+## 9.2. Numerical derivatives
+
+For a curve
+
+\[
+m(x)=E(Y\mid x),
+\]
+
+the first derivative is
+
+\[
+m'(x)
+=
+\frac{dm(x)}{dx}.
+\]
+
+On an interior grid, the central-difference approximation used conceptually
+is
+
+\[
+m'(x_i)
+\approx
+\frac{
+m(x_{i+1})-m(x_{i-1})
+}{
+x_{i+1}-x_{i-1}
+}.
+\]
+
+The second derivative is
+
+\[
+m''(x)
+=
+\frac{d^2m(x)}{dx^2}.
+\]
+
+It provides information about curvature.
+
+---
+
+## 9.3. Worked example: quadratic dose response
+
+```{r dose-data, eval=has_core}
+set.seed(401)
+
+n <- 220
+
+dat <- data.frame(
+  dose = runif(n, 0, 180)
+)
+
+eta <- with(
+  dat,
+  log(2.0) +
+    0.014 * dose -
+    0.000055 * dose^2
+)
+
+dat$biomass <- rGA(
+  n,
+  mu = exp(eta),
+  sigma = 0.20
+)
+
+fit_dose <- gamlss(
+  biomass ~ dose + I(dose^2),
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+
+grid_dose <- seq(0, 180, length.out = 181)
+```
+
+### Curve
+
+```{r trend-curve, eval=has_core}
+trend_curve <- gamlss_trend(
+  fit_dose,
+  x = "dose",
+  at_x = grid_dose,
+  method = "curve",
+  estimand = "mean",
+  uncertainty = "none",
+  data = dat
+)
+
+plot(trend_curve)
+```
+
+### First derivative
+
+```{r derivative1, eval=has_core}
+d1 <- gamlss_trend(
+  fit_dose,
+  x = "dose",
+  at_x = grid_dose,
+  method = "derivative",
+  derivative_order = 1,
+  estimand = "mean",
+  uncertainty = "none",
+  data = dat
+)
+
+plot(d1)
+```
+
+Interpretation:
+
+- \(m'(x)>0\): the response still increases with dose;
+- \(m'(x)<0\): the response decreases;
+- \(m'(x)\approx0\): a stationary region.
+
+### Second derivative
+
+```{r derivative2, eval=has_core}
+d2 <- gamlss_trend(
+  fit_dose,
+  x = "dose",
+  at_x = grid_dose,
+  method = "derivative",
+  derivative_order = 2,
+  estimand = "mean",
+  uncertainty = "none",
+  data = dat
+)
+```
+
+### Stationary points
+
+```{r turning-points, eval=has_core}
+tp <- gamlss_trend(
+  fit_dose,
+  x = "dose",
+  at_x = grid_dose,
+  method = "turning_points",
+  estimand = "mean",
+  uncertainty = "none",
+  data = dat
+)
+
+tp$special_points
+```
+
+### Maximum
+
+```{r maximum, eval=has_core}
+opt <- gamlss_trend(
+  fit_dose,
+  x = "dose",
+  at_x = grid_dose,
+  method = "optimum",
+  optimum = "maximum",
+  estimand = "mean",
+  uncertainty = "none",
+  data = dat
+)
+
+opt$special_points
+```
+
+The package performs a local quadratic refinement when the extremum occurs in
+the interior of the grid and the local curvature is compatible with a maximum
+or a minimum.
+
+---
+
+## 9.4. Example with `pb()`
+
+```{r curve-pb, eval=has_core}
+fit_smooth <- gamlss(
+  biomass ~ pb(dose),
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+
+smooth_curve <- gamlss_trend(
+  fit_smooth,
+  x = "dose",
+  at_x = grid_dose,
+  method = "curve",
+  estimand = "mean",
+  engine = "distribution",
+  uncertainty = "none",
+  data = dat
+)
+
+plot(smooth_curve)
+```
+
+This is a central case for the package, because inference is based on the
+predicted curve, without requiring `emmeans` to interpret the smoother.
+
+---
+
+# 10. `gamlss_poly_compare()`
+
+## 10.1. Purpose
+
+`gamlss_poly_compare()` compares **already fitted** and nested polynomial
+models.
+
+The function was deliberately kept separate from polynomial contrasts.
+
+### Polynomial regression
+
+Dose is quantitative:
+
+\[
+\eta(x)
+=
+\beta_0+
+\beta_1x+
+\beta_2x^2+\cdots.
+\]
+
+### Polynomial contrast
+
+The levels are treated as an ordered set and linear combinations of the means
+are built.
+
+The two analyses answer different questions.
+
+---
+
+## 10.2. GAIC
+
+The function computes
+
+\[
+GAIC
+=
+GD+K\,df,
+\]
+
+where:
+
+- \(GD\) is the global deviance;
+- \(df\) is the effective number of degrees of freedom;
+- \(K\) is the penalty.
+
+When
+
+\[
+K=2,
+\]
+
+the form corresponding to AIC is obtained.
+
+A choice such as
+
+\[
+K=\log(n)
+\]
+
+produces a penalty analogous to that of BIC.
+
+---
+
+## 10.3. Likelihood ratio
+
+For nested models,
+
+\[
+LR
+=
+GD_{\text{simple}}
+-
+GD_{\text{complex}}.
+\]
+
+If the difference in degrees of freedom is
+
+\[
+\Delta df,
+\]
+
+the approximation used is
+
+\[
+LR
+\sim
+\chi^2_{\Delta df}.
+\]
+
+---
+
+## 10.4. Worked example
+
+```{r poly-compare, eval=has_core}
+set.seed(501)
+
+dat <- data.frame(
+  dose = rep(seq(0, 160, by = 20), each = 15)
+)
+
+mu <- with(
+  dat,
+  exp(
+    log(3.0) +
+      0.010 * dose -
+      0.000035 * dose^2
+  )
+)
+
+dat$yield <- rGA(
+  nrow(dat),
+  mu = mu,
+  sigma = 0.18
+)
+
+m1 <- gamlss(
+  yield ~ dose,
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+
+m2 <- gamlss(
+  yield ~ dose + I(dose^2),
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+
+m3 <- gamlss(
+  yield ~ dose + I(dose^2) + I(dose^3),
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+
+gaic_table <- gamlss_poly_compare(
+  linear = m1,
+  quadratic = m2,
+  cubic = m3,
+  k = 2
+)
+
+gaic_table
+```
+
+Selection should not be based on the \(p\)-value alone. The following must
+also be considered:
+
+- agronomic plausibility;
+- the shape of the curve;
+- model diagnostics;
+- the gain in fit;
+- the stability of the optimum;
+- extrapolation.
+
+---
+
+# 11. `gamlss_cld()`
+
+## 11.1. Purpose
+
+`gamlss_cld()` builds a **compact letter display (CLD)** from pairwise
+comparisons.
+
+The letter representation is a compact way of summarising a matrix of
+multiple comparisons (Piepho, 2004).
+
+### Important
+
+The letters are a **presentation layer**, not the main inferential result.
+
+It is advisable to present, as a priority:
+
+- estimates;
+- confidence intervals;
+- contrasts;
+- the scale of the effect;
+- adjusted \(p\)-values.
+
+---
+
+## 11.2. Worked example
+
+```{r cld-example, eval=has_cld}
+set.seed(601)
+
+dat <- data.frame(
+  treatment = factor(
+    rep(c("T0", "T1", "T2", "T3"), each = 35)
+  )
+)
+
+mu <- c(
+  T0 = 3.0,
+  T1 = 3.2,
+  T2 = 4.0,
+  T3 = 4.1
+)
+
+dat$y <- rGA(
+  nrow(dat),
+  mu = mu[dat$treatment],
+  sigma = 0.20
+)
+
+fit <- gamlss(
+  y ~ treatment,
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+
+res <- gamlss_posthoc(
+  fit,
+  specs = "treatment",
+  estimand = "parameter",
+  what = "mu",
+  population = "reference",
+  contrast = "pairwise",
+  comparison = "difference",
+  engine = "emmeans",
+  uncertainty = "delta",
+  data = dat
+)
+
+res$contrasts
+
+cld_out <- gamlss_cld(
+  res,
+  alpha = 0.05
+)
+
+cld_out
+```
+
+Two treatments sharing a letter means that the procedure used did not detect
+a difference between them at the stated level. This **does not prove
+equivalence** between the treatments.
+
+---
+
+# 12. `gamlss_engine_info()`
+
+## 12.1. Purpose
+
+`gamlss_engine_info()` is a compact wrapper kept for backward compatibility.
+
+New analyses should prefer:
+
+```{r illustrative-40, eval=FALSE}
+gamlss_posthoc_plan()
+```
+
+---
+
+## 12.2. Worked example
+
+```{r engine-info, eval=has_core}
+set.seed(701)
+
+dat <- data.frame(
+  dose = runif(120, 0, 100)
+)
+
+dat$y <- rGA(
+  120,
+  mu = exp(1 + 0.01 * dat$dose),
+  sigma = 0.20
+)
+
+fit <- gamlss(
+  y ~ pb(dose),
+  family = GA,
+  data = dat,
+  trace = FALSE
+)
+
+gamlss_engine_info(
+  fit,
+  estimand = "parameter",
+  what = "mu",
+  population = "reference"
+)
+```
+
+For a fuller inspection:
+
+```{r engine-plan, eval=has_core}
+gamlss_posthoc_plan(
+  fit,
+  estimand = "parameter",
+  what = "mu",
+  population = "reference"
+)
+```
+
+---
+
+# 13. Recommended analysis workflows
+
+## 13.1. Qualitative treatment, simple parametric model
+
+```text
+fit GAMLSS
+      |
+      v
+diagnose the model
+      |
+      v
+gamlss_posthoc_plan()
+      |
+      v
+define the estimand
+      |
+      v
+gamlss_posthoc()
+      |
+      v
+estimates + CI + contrasts
+      |
+      v
+CLD only if necessary
+```
+
+---
+
+## 13.2. Quantitative dose
+
+```text
+fit the curve
+      |
+      v
+compare candidate models
+      |
+      v
+gamlss_poly_compare()
+      |
+      v
+gamlss_trend(method = "curve")
+      |
+      v
+gamlss_trend(method = "derivative")
+      |
+      v
+turning point / optimum
+      |
+      v
+agronomic interpretation
+```
+
+---
+
+## 13.3. `pb()` smoother
+
+```text
+gamlss(... ~ pb(x))
+      |
+      v
+gamlss_posthoc_plan()
+      |
+      v
+distribution engine
+      |
+      v
+predicted curve
+      |
+      v
+derivatives / optimum
+      |
+      v
+bootstrap if a CI is needed
+```
+
+---
+
+## 13.4. Zero-adjusted
+
+```text
+gamlssZadj
+   |
+   v
+predict xi0
+   +
+predict the positive distribution
+   |
+   v
+rebuild F(Y|X)
+   |
+   v
+E(Y), Var(Y), Qp, P(Y=0)
+   |
+   v
+standardize
+   |
+   v
+contrast
+```
+
+---
+
+# 14. Zero-adjusted models
+
+## 14.1. Why comparing `mu` alone is not enough
+
+Consider two treatments.
+
+Treatment A:
+
+\[
+h_A=0.50,
+\qquad
+E(Y_+\mid A)=4.
+\]
+
+Treatment B:
+
+\[
+h_B=0.10,
+\qquad
+E(Y_+\mid B)=3.
+\]
+
+Comparing the positive part alone:
+
+\[
+4>3.
+\]
+
+But the marginal means are
+
+\[
+E(Y\mid A)
+=
+(1-0.50)4
+=
+2,
+\]
+
+and
+
+\[
+E(Y\mid B)
+=
+(1-0.10)3
+=
+2.7.
+\]
+
+The conclusion is reversed.
+
+This example shows why defining the estimand is central.
+
+---
+
+## 14.2. Example with nodule mass
+
+A nodule-mass response may contain:
+
+- plants without nodulation: \(Y=0\);
+- nodulated plants: \(Y>0\).
+
+The treatment effect can be decomposed into:
+
+\[
+\Delta P(Y>0)
+\]
+
+and
+
+\[
+\Delta E(Y\mid Y>0).
+\]
+
+The marginal mean incorporates both mechanisms:
+
+\[
+E(Y)
+=
+P(Y>0)
+E(Y\mid Y>0).
+\]
+
+This kind of interpretation is often more useful biologically than a single
+comparison of parameters.
+
+---
+
+# 15. Comparisons, multiplicity and interpretation
+
+## 15.1. Multiplicity adjustment
+
+In multiple comparisons, the probability of extreme results grows with the
+number of tests.
+
+`gamlssPosthoc` allows adjustment methods compatible with the infrastructure
+in use to be passed through.
+
+Examples:
+
+```{r illustrative-47, eval=FALSE}
+adjust = "holm"
+adjust = "bonferroni"
+adjust = "BH"
+```
+
+When the engine is `emmeans`, adjustments specific to that infrastructure can
+be used where applicable.
+
+In the bootstrap engine, methods from `stats::p.adjust()` are used. If a
+request is not available in that context, the package avoids presenting a
+different adjustment as though it were the requested method.
+
+---
+
+## 15.2. Avoiding dichotomous interpretation
+
+A conclusion should not be reduced to:
+
+> "A differs from B because \(p<0.05\)."
+
+It is preferable to report
+
+\[
+\widehat{\Delta},
+\]
+
+the confidence interval,
+
+\[
+[\Delta_L,\Delta_U],
+\]
+
+and the agronomic relevance of the effect.
+
+For example:
+
+> Treatment B showed an estimated marginal mean 18% higher than the control,
+> with a confidence interval compatible with increases between approximately
+> X% and Y%.
+
+---
+
+## 15.3. Polynomial contrasts
+
+When the levels represent doses treated as an ordered factor, one may use:
+
+```{r illustrative-48, eval=FALSE}
+contrast = "poly"
+```
+
+For unequally spaced levels:
+
+```{r illustrative-49, eval=FALSE}
+contrast = "opoly"
+scores = c(0, 25, 50, 100)
+```
+
+This is distinct from fitting
+
+```{r illustrative-50, eval=FALSE}
+y ~ dose + I(dose^2)
+```
+
+as a quantitative regression.
+
+---
+
+# 16. Quantitative regression, derivatives and optima
+
+## 16.1. Why derivatives are useful
+
+In experiments with dose, concentration, salinity, time or temperature, the
+scientific question is often:
+
+> Over which range does the response still increase?
+
+The first derivative answers directly:
+
+\[
+m'(x)>0
+\Rightarrow
+\text{increasing response},
+\]
+
+\[
+m'(x)<0
+\Rightarrow
+\text{decreasing response}.
+\]
+
+---
+
+## 16.2. Point of maximum
+
+For a quadratic regression on the appropriate scale,
+
+\[
+\eta(x)
+=
+\beta_0+\beta_1x+\beta_2x^2,
+\]
+
+the stationary point of the linear predictor is
+
+\[
+x^*
+=
+-\frac{\beta_1}{2\beta_2}.
+\]
+
+In GAMLSS, however:
+
+- the link may be non-linear;
+- the estimand may not be the linear predictor;
+- the mean may depend on several parameters;
+- the curve may be a smoother.
+
+For this reason `gamlss_trend()` works preferentially on the **curve of the
+declared estimand**, and not on an assumed closed-form formula.
+
+---
+
+## 16.3. A statistical maximum is not necessarily a recommended dose
+
+The predicted maximum of an agronomic variable should not automatically be
+called an "optimal dose".
+
+A recommendation may require:
+
+- economic analysis;
+- toxicity;
+- environmental risk;
+- operational constraints;
+- stability across environments;
+- other outcomes.
+
+Thus `method = "optimum"` locates a mathematical extremum of the estimand.
+Its scientific interpretation depends on the context.
+
+---
+
+# 17. Uncertainty: delta, simulation and bootstrap
+
+## 17.1. Delta method
+
+For a differentiable function
+
+\[
+g(\boldsymbol{\beta}),
+\]
+
+the variance can be approximated by
+
+\[
+\operatorname{Var}
+\left[
+g(\hat{\boldsymbol{\beta}})
+\right]
+\approx
+\nabla g(\hat{\boldsymbol{\beta}})^{\mathsf T}
+\widehat{\operatorname{Var}}(\hat{\boldsymbol{\beta}})
+\nabla g(\hat{\boldsymbol{\beta}}).
+\]
+
+The method is efficient when a suitable covariance matrix exists and the
+transformation is regular.
+
+---
+
+## 17.2. Simulation from the coefficient uncertainty
+
+When a multivariate approximation of the coefficients is appropriate,
+
+\[
+\boldsymbol{\beta}^{(b)}
+\sim
+N
+\left(
+\hat{\boldsymbol{\beta}},
+\widehat{\mathbf V}
+\right),
+\]
+
+and the estimand is recomputed for each draw.
+
+This strategy can be used by engines that provide the necessary
+infrastructure.
+
+---
+
+## 17.3. Refit bootstrap
+
+The bootstrap is the safest generic option when the estimand depends on:
+
+- several parameters;
+- a zero-adjusted transformation;
+- a smoother;
+- a complex non-linear function;
+- a curve, a derivative or an optimum.
+
+For \(b=1,\ldots,B\):
+
+1. generate or resample data;
+2. refit the model;
+3. recompute the estimand;
+4. store \(T^{(b)}\).
+
+The standard error can be estimated by
+
+\[
+SE_{\text{boot}}
+=
+\sqrt{
+\frac{1}{B-1}
+\sum_{b=1}^{B}
+\left(
+T^{(b)}-\bar T
+\right)^2
+}.
+\]
+
+A 95% percentile interval uses
+
+\[
+Q_{0.025}
+\{T^{(1)},\ldots,T^{(B)}\}
+\]
+
+and
+
+\[
+Q_{0.975}
+\{T^{(1)},\ldots,T^{(B)}\}.
+\]
+
+---
+
+## 17.4. Types of bootstrap
+
+### Parametric
+
+```{r illustrative-51, eval=FALSE}
+bootstrap = "parametric"
+```
+
+Data are generated from the fitted model.
+
+### Case
+
+```{r illustrative-52, eval=FALSE}
+bootstrap = "case"
+```
+
+Observations are resampled.
+
+### Cluster
+
+```{r illustrative-53, eval=FALSE}
+bootstrap = "cluster"
+cluster = "block"
+```
+
+Whole clusters are resampled.
+
+For dependent experimental data, the resampling unit must respect the
+experimental unit and the design.
+
+---
+
+## 17.5. Simultaneous bands
+
+For a curve evaluated at several points, pointwise intervals do not control
+the simultaneous uncertainty over the whole trajectory.
+
+With bootstrap draws, the package can obtain an approximate maximum
+standardized deviation statistic:
+
+\[
+M^{(b)}
+=
+\max_j
+\left|
+\frac{
+T_j^{(b)}-\hat T_j
+}{
+\widehat{SE}_j
+}
+\right|.
+\]
+
+If
+
+\[
+c_{0.95}
+=
+Q_{0.95}(M),
+\]
+
+the simultaneous band is built approximately as
+
+\[
+\hat T_j
+\pm
+c_{0.95}\widehat{SE}_j.
+\]
+
+---
+
+# 18. Good practice and limitations
+
+## 18.1. Post-hoc analysis does not fix an inadequate model
+
+The model must be evaluated before the comparisons.
+
+The following should be considered:
+
+- residuals;
+- worm plots;
+- adequacy of the family;
+- influence;
+- convergence;
+- dependence structure;
+- plausibility of the terms;
+- quality of the predictions.
+
+The GAMLSS tradition uses randomized quantile residuals for the diagnosis of
+distributional models (Dunn & Smyth, 1996).
+
+---
+
+## 18.2. Do not interpret `mu` without checking the family
+
+Before writing
+
+> "adjusted mean of `mu`",
+
+check whether
+
+\[
+\mu=E(Y)
+\]
+
+holds in the family being used.
+
+If that equality does not hold, prefer
+
+```{r illustrative-54, eval=FALSE}
+estimand = "mean"
+```
+
+---
+
+## 18.3. An observed zero needs a scientific interpretation
+
+In a zero-adjusted distribution, the model separates zero from the positive
+part.
+
+But an observed zero may represent:
+
+- biological absence;
+- a value below the detection limit;
+- censoring;
+- rounding;
+- measurement failure.
+
+The zero-mass component must be coherent with the observational mechanism.
+
+---
+
+## 18.4. Avoid extrapolation
+
+In quantitative regressions, do not interpret
+
+- derivatives;
+- turning points;
+- maxima
+
+outside the range of data that supports the fit.
+
+---
+
+## 18.5. `emmeans` should not be used as a universal engine
+
+`emmeans` remains extremely useful in its natural domain, but the documented
+support for `gamlss` is partial and does not cover the selected submodel when
+smoothers such as `pb()` are present.
+
+The package avoids forcing that route.
+
+---
+
+## 18.6. `marginaleffects` is used with a capability test
+
+Support for a class by a generic package does not imply that every
+combination of
+
+- family;
+- parameter;
+- smoother;
+- prediction function
+
+will be valid.
+
+For this reason `gamlssPosthoc` tests the operation at run time and, under
+automatic routing, may fall back to the distribution engine.
+
+---
+
+## 18.7. The bootstrap can fail
+
+A high rate of refits that do not converge is information about the stability
+of the model.
+
+The package should not silently discard those replicates without warning the
+user.
+
+---
+
+# 19. Summary of the functions
+
+| Function | Main purpose | Typical use |
+|---|---|---|
+| `gamlss_posthoc()` | General post-model inference | means, parameters, variances, quantiles, contrasts |
+| `gamlss_posthoc_plan()` | Diagnosis and routing | deciding engine and uncertainty before the analysis |
+| `gamlss_distribution_summary()` | Summarise the predicted distribution | mean, variance, quantiles, mass at zero |
+| `gamlss_trend()` | Quantitative regression | curve, derivatives, turning points, maximum/minimum |
+| `gamlss_poly_compare()` | Compare nested polynomial regressions | linear vs quadratic vs cubic |
+| `gamlss_cld()` | Compact letter display | compact summary of pairwise comparisons |
+| `gamlss_engine_info()` | Compact legacy diagnostic | compatibility with older workflows |
+
+---
+
+# 20. References
+
+Arel-Bundock, V., Greifer, N., & Heiss, A. (2024). How to interpret statistical models using `marginaleffects` for R and Python. *Journal of Statistical Software, 111*(9). https://doi.org/10.18637/jss.v111.i09
+
+Dunn, P. K., & Smyth, G. K. (1996). Randomized quantile residuals. *Journal of Computational and Graphical Statistics, 5*(3), 236-244. https://doi.org/10.1080/10618600.1996.10474708
+
+Enki, D. G., Noufaily, A., Farrington, P., Garthwaite, P., Andrews, N., & Charlett, A. (2017). Taylor's power law and the statistical modelling of infectious disease surveillance data. *Journal of the Royal Statistical Society: Series A (Statistics in Society), 180*(1), 45-72. https://doi.org/10.1111/rssa.12181
+
+Lenth, R. V. (2016). Least-squares means: The R package `lsmeans`. *Journal of Statistical Software, 69*(1), 1-33. https://doi.org/10.18637/jss.v069.i01
+
+Piepho, H.-P. (2004). An algorithm for a letter-based representation of all-pairwise comparisons. *Journal of Computational and Graphical Statistics, 13*(2), 456-466. https://doi.org/10.1198/1061860043515
+
+Rigby, R. A., & Stasinopoulos, D. M. (2005). Generalized additive models for location, scale and shape. *Journal of the Royal Statistical Society: Series C (Applied Statistics), 54*(3), 507-554. https://doi.org/10.1111/j.1467-9876.2005.00510.x
+
+Rigby, R. A., Stasinopoulos, D. M., Heller, G. Z., & De Bastiani, F. (2019). *Distributions for Modeling Location, Scale, and Shape: Using GAMLSS in R*. Chapman & Hall/CRC. https://doi.org/10.1201/9780429298547
+
+Stasinopoulos, D. M., & Rigby, R. A. (2007). Generalized additive models for location scale and shape (GAMLSS) in R. *Journal of Statistical Software, 23*(7), 1-46. https://doi.org/10.18637/jss.v023.i07
+
+Stasinopoulos, D. M., Rigby, R. A., & De Bastiani, F. (2018). GAMLSS: A distributional regression approach. *Statistical Modelling, 18*(3-4), 248-273. https://doi.org/10.1177/1471082X18759144
+
+Stasinopoulos, D. M., Rigby, R. A., Heller, G. Z., Voudouris, V., & De Bastiani, F. (2017). *Flexible Regression and Smoothing: Using GAMLSS in R*. Chapman & Hall/CRC. https://doi.org/10.1201/b21973
+
+Stasinopoulos, D. M., Rigby, R. A., Heller, G. Z., & De Bastiani, F. (2023). P-splines and GAMLSS: A powerful combination, with an application to zero-adjusted distributions. *Statistical Modelling, 23*(5-6), 510-524. https://doi.org/10.1177/1471082X231176635
+
+Umlauf, N., Klein, N., & Zeileis, A. (2018). BAMLSS: Bayesian additive models for location, scale and shape (and beyond). *Journal of Computational and Graphical Statistics, 27*(3), 612-627. https://doi.org/10.1080/10618600.2017.1407325
+
+Umlauf, N., Klein, N., Simon, T., & Zeileis, A. (2021). `bamlss`: A Lego toolbox for flexible Bayesian regression (and beyond). *Journal of Statistical Software, 100*(4), 1-53. https://doi.org/10.18637/jss.v100.i04
+
+---
+
+## Software documentation consulted
+
+**`emmeans`**
+Lenth, R. V., & Piaskowski, J. *Models supported by emmeans*.
+https://rvlenth.github.io/emmeans/articles/models.html
+
+**`gamlss`**
+Generalized Additive Models for Location Scale and Shape.
+https://search.r-project.org/CRAN/refmans/gamlss/html/gamlss.html
+
+**`gamlss.dist::GAMLSS()`**
+Create a GAMLSS Distribution.
+https://search.r-project.org/CRAN/refmans/gamlss.dist/html/GAMLSS.html
+
+**`gamlss.dist::GA()`**
+Gamma distribution for fitting a GAMLSS.
+https://search.r-project.org/CRAN/refmans/gamlss.dist/html/GA.html
+
+**`gamlss.dist::GAF()`**
+Gamma family with flexible mean-variance power.
+https://search.r-project.org/CRAN/refmans/gamlss.dist/html/GAF.html
+
+**`gamlss.inf::gamlssZadj()`**
+Fitting positive real-line response variables with zeros.
+https://rdrr.io/cran/gamlss.inf/man/gamlssZadj.html
+
+**`marginaleffects`**
+Predictions, comparisons, slopes, marginal means, and hypothesis tests.
+https://marginaleffects.com/
+
+---
+
+# Appendix A. Central methodological message
+
+The main idea of `gamlssPosthoc` can be summarised in one sentence:
+
+> **In distributional regression, the post-model analysis must be defined by
+> the scientific estimand and by the target population, and not by the
+> automatic availability of an "adjusted means" function.**
+
+In mathematical terms:
+
+\[
+\boxed{
+\widehat F(Y\mid X)
+\rightarrow
+T\{\widehat F(Y\mid X)\}
+\rightarrow
+\operatorname{Marginalization}
+\rightarrow
+\operatorname{Contrast}
+\rightarrow
+\operatorname{Uncertainty}
+}
+\]
+
+This organisation makes it possible to apply the same logic to parameters,
+means, variances, quantiles, point probabilities, zero-adjusted responses,
+dose curves and other derived estimands.
+
+For computationally heavy bootstrap examples, reduced values of `B` are used
+in this vignette; larger values are recommended for real scientific analysis.
+
+---
+
+# Appendix B. S3 printing and plotting methods
+
+Although they are not the main analytical API, the package registers S3
+methods that make the results easier to inspect.
+
+## `print.gamlss_posthoc()`
+
+It is called automatically by
+
+```{r illustrative-59, eval=FALSE}
+res <- gamlss_posthoc(...)
+print(res)
+```
+
+or simply
+
+```{r illustrative-60, eval=FALSE}
+res
+```
+
+The method explicitly displays:
+
+- the engine used;
+- the estimand;
+- the recorded mathematical definition;
+- the target population;
+- the weighting;
+- the uncertainty layer;
+- the scale of the comparison;
+- the estimates;
+- the contrasts, when they exist.
+
+This output was deliberately designed to prevent the result from being
+interpreted without knowledge of the estimand.
+
+## `plot.gamlss_posthoc()`
+
+```{r illustrative-61, eval=FALSE}
+plot(res)
+```
+
+Produces a basic visualisation of the estimates by group. When `lower.CL` and
+`upper.CL` are available, the intervals are added to the plot.
+
+The method is deliberately simple. For publication figures, it is advisable
+to convert
+
+```{r illustrative-62, eval=FALSE}
+res$estimates
+```
+
+into a `data.frame` and build the figure with the graphical tool of the
+user's choice.
+
+## `print.gamlss_posthoc_plan()`
+
+```{r illustrative-63, eval=FALSE}
+plan <- gamlss_posthoc_plan(...)
+print(plan)
+```
+
+Shows:
+
+- an overview of the model;
+- the distributional parameters;
+- the capability of each parameter;
+- the availability of the engines;
+- the recommendation;
+- the warnings.
+
+## `print.gamlss_trend()`
+
+```{r illustrative-64, eval=FALSE}
+tr <- gamlss_trend(...)
+print(tr)
+```
+
+Displays the quantitative method used, the predictor and the table of
+results. If maxima, minima or stationary points exist, they are shown in a
+separate section.
+
+## `plot.gamlss_trend()`
+
+```{r illustrative-65, eval=FALSE}
+plot(tr)
+```
+
+For `method = "curve"`, it draws the curve of the estimand. For derivatives,
+it draws the corresponding derivative. Special points, when present, are
+overlaid.
+
+These methods are inspection tools and do not replace the preparation of
+complete scientific graphics.
