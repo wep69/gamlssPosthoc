@@ -8,6 +8,8 @@ the uncertainty layer as separate and explicitly recorded choices.
 
 ## Test environments
 
+* win-builder, R 4.6.1 release, Windows Server 2022 x64.
+* macOS builder, R 4.6.1 release, macOS 26.6, arm64 (Apple M1).
 * Local: Windows 11 x64, R 4.6.0 (2026-04-24 ucrt), `R CMD check --as-cran`.
 * GitHub Actions, all with `--as-cran`:
   * ubuntu-latest, R-devel
@@ -20,13 +22,38 @@ the uncertainty layer as separate and explicitly recorded choices.
 
 0 errors | 0 warnings | 1 note
 
-The note is the standard one for a first-time submission:
+The macOS builder reports `Status: OK`, with no errors, warnings or notes.
+
+On win-builder the single note is the expected one for a first-time
+submission, together with the usual spelling remark:
 
 ```
 * checking CRAN incoming feasibility ... NOTE
 Maintainer: 'Walter Esfrain Pereira <walterufpb@yahoo.com.br>'
+
 New submission
+
+Possibly misspelled words in DESCRIPTION:
+  GAMLSS (3:59, 9:43)
+  Rigby (16:8)
+  Stasinopoulos (16:18)
+  estimands (13:49)
 ```
+
+All four flagged words are correct and intentional:
+
+* **GAMLSS** is the standard acronym for generalized additive models for
+  location, scale and shape. It appears in the Title and in the Description,
+  and the Description introduces it with its full expansion, "generalized
+  additive models for location, scale and shape (GAMLSS)". It denotes the
+  model class, not a package; the 'gamlss' package itself is quoted in the
+  Description as required.
+* **Rigby** and **Stasinopoulos** are the surnames of the authors of the
+  cited reference, Rigby and Stasinopoulos (2005)
+  <doi:10.1111/j.1467-9876.2005.00510.x>.
+* **estimand** is established statistical terminology, used here in the sense
+  of ICH E9(R1) and of the causal-inference literature. It is central to the
+  package, which records the estimand of every result explicitly.
 
 ## Notes for the reviewer
 
