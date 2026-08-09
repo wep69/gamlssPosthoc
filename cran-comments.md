@@ -8,7 +8,9 @@ the uncertainty layer as separate and explicitly recorded choices.
 
 ## Test environments
 
-* win-builder, R 4.6.1 release, Windows Server 2022 x64.
+* win-builder, Windows Server 2022 x64, both:
+  * R-devel (2026-08-08 r90381 ucrt)
+  * R 4.6.1 release
 * macOS builder, R 4.6.1 release, macOS 26.6, arm64 (Apple M1).
 * Local: Windows 11 x64, R 4.6.0 (2026-04-24 ucrt), `R CMD check --as-cran`.
 * GitHub Actions, all with `--as-cran`:
@@ -24,8 +26,9 @@ the uncertainty layer as separate and explicitly recorded choices.
 
 The macOS builder reports `Status: OK`, with no errors, warnings or notes.
 
-On win-builder the single note is the expected one for a first-time
-submission, together with the usual spelling remark:
+Both win-builder runs, R-devel and R release, return the same single note:
+the expected one for a first-time submission, together with the usual
+spelling remark:
 
 ```
 * checking CRAN incoming feasibility ... NOTE
