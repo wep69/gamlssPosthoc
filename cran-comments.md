@@ -63,12 +63,19 @@ All four flagged words are correct and intentional:
 * All modelling dependencies (`gamlss`, `gamlss.dist`, `gamlss.inf`,
   `emmeans`, `marginaleffects`, `distributions3`, `multcompView`) are in
   `Suggests`. Every use is conditional: the package code routes through an
-  internal `requireNamespace()` helper, all seven examples are wrapped in
+  internal `requireNamespace()` helper, all 23 example blocks are wrapped in
   `requireNamespace()`, the tests use `skip_if_not_installed()`, and the
-  vignette chunks are gated on availability. `Imports` is limited to
+  chunks of both vignettes are gated on availability. `Imports` is limited to
   `graphics`, `stats` and `utils`.
-* Examples are executable and fast: seven examples, the slowest at 0.6
-  seconds, under one second in total.
+* Examples are executable and fast: 23 example blocks across seven help
+  topics, 1.4 seconds in total, the slowest topic at 0.9 seconds. They
+  deliberately span continuous, discrete and mixed responses (GA, NO, LOGNO,
+  WEI, IG, PO and ZAGA), because the routing and the reported estimand depend
+  on the family.
+* There are two vignettes. `workflow.Rmd` is a short English overview.
+  `gamlssPosthoc-fundamentos.Rmd` is a longer treatment in Portuguese, the
+  maintainer's working language, covering the statistical background. Both
+  are rebuilt by `R CMD check`.
 * The package does not write to the user's file space, and does not modify
   `options()`, `par()` or the working directory.
 * The reference to Rigby and Stasinopoulos (2005) in the Description field
