@@ -96,12 +96,38 @@
   replicate(n, one())
 }
 
+## Exact probability mass at zero.
+##
+## Three cases must be separated, because a single rule is wrong for at least
+## one of them:
+##
+##   discrete (PO, NBI, ...)   P(Y=0) is the density at zero.
+##   mixed    (ZAGA, ZAIG, ...) `is_discrete()` and `is_continuous()` are both
+##                             FALSE. Support is non-negative, so P(Y<0)=0 and
+##                             the atom at zero is exactly F(0).
+##   continuous (GA, NO, ...)  There is no atom, so the mass is 0. Note that
+##                             F(0) must NOT be used here: for a family with
+##                             support on the whole real line, such as NO,
+##                             F(0) is a tail probability, not a point mass.
 .gph_exact_prob_zero <- function(D) {
   .gph_require("distributions3", "for exact probability masses.")
+  n <- length(D)
   discrete <- distributions3::is_discrete(D)
-  if (length(discrete) == 1L) discrete <- rep(discrete, length(D))
-  ans <- numeric(length(discrete))
-  if (any(discrete)) ans[discrete] <- as.numeric(distributions3::pdf(D[discrete], 0))
+  if (length(discrete) == 1L) discrete <- rep(discrete, n)
+  continuous <- distributions3::is_continuous(D)
+  if (length(continuous) == 1L) continuous <- rep(continuous, n)
+
+  ans <- numeric(n)
+  if (any(discrete)) {
+    ans[discrete] <- as.numeric(distributions3::pdf(D[discrete], 0))
+  }
+  mixed <- !discrete & !continuous
+  if (any(mixed)) {
+    val <- try(as.numeric(distributions3::cdf(D[mixed], 0)), silent = TRUE)
+    if (!inherits(val, "try-error") && length(val) == sum(mixed)) {
+      ans[mixed] <- pmin(pmax(val, 0), 1)
+    }
+  }
   ans
 }
 

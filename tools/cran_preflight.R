@@ -52,18 +52,26 @@ roxygen2::roxygenise(pkg, roclets = c("rd", "namespace"))
 cat("\n[2/7] Running package tests from the source tree...\n")
 testthat::test_local(pkg, reporter = "summary", stop_on_failure = TRUE)
 
-cat("\n[3/7] Compiling and verifying the vignette...\n")
-vig_src <- file.path(pkg, "vignettes", "workflow.Rmd")
+cat("\n[3/7] Compiling and verifying the vignettes...\n")
+vig_all <- list.files(file.path(pkg, "vignettes"), pattern = "[.]Rmd$",
+                      full.names = TRUE)
+if (!length(vig_all)) stop("No vignette sources found.")
+for (vig_src in vig_all) {
 vig_dir <- tempfile("gamlssPosthoc-vignette-")
 dir.create(vig_dir, recursive = TRUE)
+cat("\n-- ", basename(vig_src), " --\n", sep = "")
 
 ## Every code chunk is gated by an `eval=has_*` guard, so a missing suggested
 ## package makes the vignette render successfully while silently evaluating
 ## nothing. Knitting to markdown first lets us confirm that the chunks really
 ## ran: `comment = "#>"` prefixes every line of evaluated output.
-vig_md <- file.path(vig_dir, "workflow.md")
+vig_md <- file.path(vig_dir, "vignette.md")
+## Knit from inside the temporary directory so that generated figures land
+## there instead of polluting the package sources.
+old_wd <- setwd(vig_dir)
 invisible(knitr::knit(vig_src, output = vig_md, quiet = TRUE,
                       envir = new.env(parent = globalenv())))
+setwd(old_wd)
 md_lines <- readLines(vig_md, warn = FALSE)
 n_eval <- length(grep("^#>", md_lines))
 n_chunks <- length(grep("^```\\{r", readLines(vig_src, warn = FALSE)))
@@ -79,13 +87,14 @@ rmarkdown::render(
   input = vig_src,
   output_format = "html_vignette",
   output_dir = vig_dir,
-  output_file = "workflow.html",
+  output_file = "vignette.html",
   quiet = TRUE,
   envir = new.env(parent = globalenv())
 )
-vig_out <- file.path(vig_dir, "workflow.html")
+vig_out <- file.path(vig_dir, "vignette.html")
 stopifnot(file.exists(vig_out), file.info(vig_out)$size > 0)
 cat("Vignette rendered: ", vig_out, "\n", sep = "")
+}
 
 cat("\n[4/7] Building the exact CRAN source tarball with R CMD build...\n")
 parent <- dirname(pkg)

@@ -25,6 +25,49 @@
 #'   fit <- gamlss::gamlss(y ~ x, data = d, family = gamlss.dist::GA, trace = FALSE)
 #'   gamlss_distribution_summary(fit, data.frame(x = c(0.5, 1, 1.5)), data = d)
 #' }
+#'
+#' # Lognormal: mean and median differ, and both are returned on the response
+#' # scale rather than on the scale of the location parameter.
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(31)
+#'   d <- data.frame(x = runif(60, 0, 10))
+#'   d$y <- gamlss.dist::rLOGNO(nrow(d), mu = 0.5 + 0.1 * d$x, sigma = 0.4)
+#'   fit <- gamlss::gamlss(y ~ x, family = gamlss.dist::LOGNO,
+#'                         data = d, trace = FALSE)
+#'   gamlss_distribution_summary(fit, data.frame(x = c(2, 5, 8)), data = d)
+#' }
+#'
+#' # Zero-adjusted Gamma: a mixed distribution, with an atom at zero and a
+#' # continuous positive part. `prob_zero` is the exact mass at zero, not a
+#' # value read off the cumulative distribution of a continuous family.
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(32)
+#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 40)))
+#'   d$y <- gamlss.dist::rZAGA(nrow(d), mu = ifelse(d$trt == "A", 2, 3),
+#'                             sigma = 0.4,
+#'                             nu = ifelse(d$trt == "A", 0.35, 0.10))
+#'   fit <- gamlss::gamlss(y ~ trt, nu.formula = ~ trt,
+#'                         family = gamlss.dist::ZAGA, data = d, trace = FALSE)
+#'   nd <- data.frame(trt = factor(c("A", "B"), levels = levels(d$trt)))
+#'   gamlss_distribution_summary(fit, nd, data = d)
+#' }
+#'
+#' # Poisson counts: a discrete family, where the mass at zero is exp(-mu).
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(33)
+#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 30)))
+#'   d$y <- gamlss.dist::rPO(nrow(d), mu = ifelse(d$trt == "A", 1.5, 4))
+#'   fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::PO,
+#'                         data = d, trace = FALSE)
+#'   nd <- data.frame(trt = factor(c("A", "B"), levels = levels(d$trt)))
+#'   gamlss_distribution_summary(fit, nd, probs = c(0.1, 0.5, 0.9), data = d)
+#' }
 gamlss_distribution_summary <- function(object, newdata, probs = c(0.025, 0.5, 0.975),
                                          data = NULL, positive_dist_fun = NULL) {
   if (!.gph_is_gamlss(object)) stop("`object` must inherit from 'gamlss' or 'gamlssZadj'.", call. = FALSE)

@@ -46,4 +46,34 @@ if (requireNamespace("gamlss", quietly = TRUE) &&
   # Models must be ordered from simpler to more complex
   gamlss_poly_compare(linear = m1, quadratic = m2)
 }
+
+# Normal response, three nested degrees.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(61)
+  d <- data.frame(dose = rep(seq(0, 10, by = 2), each = 10))
+  d$y <- gamlss.dist::rNO(nrow(d),
+    mu = 5 + 1.2 * d$dose - 0.09 * d$dose^2, sigma = 1)
+  m1 <- gamlss::gamlss(y ~ dose, family = gamlss.dist::NO,
+                       data = d, trace = FALSE)
+  m2 <- gamlss::gamlss(y ~ dose + I(dose^2), family = gamlss.dist::NO,
+                       data = d, trace = FALSE)
+  m3 <- gamlss::gamlss(y ~ dose + I(dose^2) + I(dose^3),
+                       family = gamlss.dist::NO, data = d, trace = FALSE)
+  gamlss_poly_compare(linear = m1, quadratic = m2, cubic = m3)
+}
+
+# Inverse Gaussian response, with a BIC-like penalty instead of AIC.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(62)
+  d <- data.frame(dose = rep(seq(0, 12, by = 3), each = 12))
+  d$y <- gamlss.dist::rIG(nrow(d),
+    mu = 2 + 0.35 * d$dose - 0.02 * d$dose^2, sigma = 0.25)
+  m1 <- gamlss::gamlss(y ~ dose, family = gamlss.dist::IG,
+                       data = d, trace = FALSE)
+  m2 <- gamlss::gamlss(y ~ dose + I(dose^2), family = gamlss.dist::IG,
+                       data = d, trace = FALSE)
+  gamlss_poly_compare(linear = m1, quadratic = m2, k = log(nrow(d)))
+}
 }

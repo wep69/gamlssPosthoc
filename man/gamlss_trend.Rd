@@ -125,4 +125,39 @@ if (requireNamespace("gamlss", quietly = TRUE) &&
   gamlss_trend(fit, x = "dose", method = "optimum", optimum = "maximum",
                n = 25L, uncertainty = "none", data = d)
 }
+
+# Normal response: first derivative of the fitted curve, that is, the
+# marginal effect of dose on the response scale.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(81)
+  d <- data.frame(dose = rep(seq(0, 12, by = 2), each = 10))
+  d$y <- gamlss.dist::rNO(nrow(d),
+    mu = 4 + 1.5 * d$dose - 0.1 * d$dose^2, sigma = 1)
+  fit <- gamlss::gamlss(y ~ dose + I(dose^2), family = gamlss.dist::NO,
+                        data = d, trace = FALSE)
+  tr <- gamlss_trend(fit, x = "dose", method = "derivative",
+                     derivative_order = 1, n = 20L,
+                     uncertainty = "none", data = d)
+  head(tr$values)
+}
+
+# Lognormal response fitted with a `pb()` smoother: emmeans is not usable
+# here, so the curve comes from the distribution engine.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE) &&
+    requireNamespace("distributions3", quietly = TRUE)) {
+  set.seed(82)
+  d <- data.frame(dose = runif(70, 0, 12))
+  d$y <- gamlss.dist::rLOGNO(nrow(d),
+    mu = 0.5 + 0.15 * d$dose - 0.008 * d$dose^2, sigma = 0.3)
+  # `gamlss::pb()` is qualified because examples run with only this
+  # package attached.
+  fit <- gamlss::gamlss(y ~ gamlss::pb(dose), family = gamlss.dist::LOGNO,
+                        data = d, trace = FALSE)
+  tr <- gamlss_trend(fit, x = "dose", method = "curve", n = 20L,
+                     engine = "distribution", uncertainty = "none",
+                     data = d)
+  head(tr$values)
+}
 }

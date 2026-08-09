@@ -41,4 +41,33 @@ if (requireNamespace("gamlss", quietly = TRUE) &&
                         trace = FALSE)
   gamlss_engine_info(fit, estimand = "parameter", what = "mu")
 }
+
+# Normal response with a `pb()` smoother: the smoother makes the emmeans
+# reference grid unsafe, which the summary reports.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(51)
+  d <- data.frame(x = runif(60, 0, 10))
+  d$y <- gamlss.dist::rNO(nrow(d), mu = 5 + 0.8 * d$x - 0.05 * d$x^2,
+                          sigma = 1)
+  # `gamlss::pb()` is qualified because examples run with only this
+  # package attached.
+  fit <- gamlss::gamlss(y ~ gamlss::pb(x), family = gamlss.dist::NO,
+                        data = d, trace = FALSE)
+  gamlss_engine_info(fit, estimand = "parameter", what = "mu",
+                     population = "reference")
+}
+
+# Lognormal response, asking for the response mean rather than a parameter:
+# the target depends on more than one parameter, so routing changes.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(52)
+  d <- data.frame(trt = factor(rep(c("A", "B"), each = 25)))
+  d$y <- gamlss.dist::rLOGNO(nrow(d),
+    mu = ifelse(d$trt == "A", 1, 1.5), sigma = 0.4)
+  fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::LOGNO,
+                        data = d, trace = FALSE)
+  gamlss_engine_info(fit, estimand = "mean")
+}
 }

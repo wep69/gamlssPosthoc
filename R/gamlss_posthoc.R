@@ -88,6 +88,51 @@
 #'                  contrast = "pairwise", comparison = "percent_change",
 #'                  uncertainty = "none", data = d)
 #' }
+#'
+#' # Lognormal: the response mean is not exp(mu), because it also depends on
+#' # sigma. The distribution engine returns E(Y), not the back-transformed
+#' # location parameter.
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(22)
+#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 30)))
+#'   d$y <- gamlss.dist::rLOGNO(nrow(d),
+#'     mu = ifelse(d$trt == "A", 1.0, 1.4), sigma = 0.5)
+#'   fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::LOGNO,
+#'                         data = d, trace = FALSE)
+#'   gamlss_posthoc(fit, specs = "trt", estimand = "mean",
+#'                  contrast = "pairwise", comparison = "ratio",
+#'                  uncertainty = "none", data = d)$estimates
+#' }
+#'
+#' # Normal: comparing the dispersion submodel rather than the location one.
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("emmeans", quietly = TRUE)) {
+#'   set.seed(21)
+#'   d <- data.frame(g = factor(rep(c("baixo", "alto"), each = 30)))
+#'   d$y <- gamlss.dist::rNO(nrow(d), mu = 10,
+#'                           sigma = ifelse(d$g == "alto", 3, 1.2))
+#'   fit <- gamlss::gamlss(y ~ 1, sigma.formula = ~ g,
+#'                         family = gamlss.dist::NO, data = d, trace = FALSE)
+#'   gamlss_posthoc(fit, specs = "g", estimand = "parameter", what = "sigma",
+#'                  population = "reference", contrast = "pairwise", data = d)
+#' }
+#'
+#' # Poisson counts: a quantile of the predictive distribution.
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(23)
+#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 30)))
+#'   d$y <- gamlss.dist::rPO(nrow(d), mu = ifelse(d$trt == "A", 4, 7))
+#'   fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::PO,
+#'                         data = d, trace = FALSE)
+#'   gamlss_posthoc(fit, specs = "trt", estimand = "quantile", prob = 0.9,
+#'                  engine = "distribution", uncertainty = "none",
+#'                  data = d)$estimates
+#' }
 gamlss_posthoc <- function(object, specs, by = NULL,
                             estimand = c("parameter", "mean", "variance", "quantile", "prob_zero", "custom"),
                             what = "mu",

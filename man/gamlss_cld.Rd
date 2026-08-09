@@ -55,4 +55,38 @@ if (requireNamespace("gamlss", quietly = TRUE) &&
                        contrast = "pairwise", data = d)
   gamlss_cld(ph)
 }
+
+# Normal response.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE) &&
+    requireNamespace("emmeans", quietly = TRUE) &&
+    requireNamespace("multcompView", quietly = TRUE)) {
+  set.seed(41)
+  d <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 20)))
+  d$y <- gamlss.dist::rNO(nrow(d),
+    mu = c(A = 10, B = 13, C = 17)[d$trt], sigma = 1.5)
+  fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::NO,
+                        data = d, trace = FALSE)
+  ph <- gamlss_posthoc(fit, specs = "trt", estimand = "parameter",
+                       what = "mu", population = "reference",
+                       contrast = "pairwise", data = d)
+  gamlss_cld(ph)
+}
+
+# Weibull response, with a stricter significance threshold.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE) &&
+    requireNamespace("emmeans", quietly = TRUE) &&
+    requireNamespace("multcompView", quietly = TRUE)) {
+  set.seed(42)
+  d <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 25)))
+  d$y <- gamlss.dist::rWEI(nrow(d),
+    mu = c(A = 5, B = 7, C = 10)[d$trt], sigma = 3)
+  fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::WEI,
+                        data = d, trace = FALSE)
+  ph <- gamlss_posthoc(fit, specs = "trt", estimand = "parameter",
+                       what = "mu", population = "reference",
+                       contrast = "pairwise", data = d)
+  gamlss_cld(ph, alpha = 0.01)
+}
 }

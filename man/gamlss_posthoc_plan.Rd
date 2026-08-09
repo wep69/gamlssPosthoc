@@ -55,4 +55,32 @@ if (requireNamespace("gamlss", quietly = TRUE) &&
   # Which engine is eligible, and why the others are not
   gamlss_posthoc_plan(fit, estimand = "mean")
 }
+
+# Normal response with a `pb()` smoother: the capability matrix reports
+# which parameter carries a smoother and how that constrains routing.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(71)
+  d <- data.frame(x = runif(60, 0, 10))
+  d$y <- gamlss.dist::rNO(nrow(d), mu = 5 + 0.8 * d$x, sigma = 1)
+  # `gamlss::pb()` is qualified because examples run with only this
+  # package attached.
+  fit <- gamlss::gamlss(y ~ gamlss::pb(x), family = gamlss.dist::NO,
+                        data = d, trace = FALSE)
+  gamlss_posthoc_plan(fit, estimand = "parameter", what = "mu",
+                      population = "reference")
+}
+
+# Zero-adjusted Gamma, asking for the exact mass at zero. The plan lists
+# every distributional parameter discovered in the fit, including `nu`.
+if (requireNamespace("gamlss", quietly = TRUE) &&
+    requireNamespace("gamlss.dist", quietly = TRUE)) {
+  set.seed(72)
+  d <- data.frame(trt = factor(rep(c("A", "B"), each = 40)))
+  d$y <- gamlss.dist::rZAGA(nrow(d), mu = 2, sigma = 0.4,
+                            nu = ifelse(d$trt == "A", 0.35, 0.10))
+  fit <- gamlss::gamlss(y ~ trt, nu.formula = ~ trt,
+                        family = gamlss.dist::ZAGA, data = d, trace = FALSE)
+  gamlss_posthoc_plan(fit, estimand = "prob_zero")
+}
 }
