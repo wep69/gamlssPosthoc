@@ -72,10 +72,11 @@ All four flagged words are correct and intentional:
   deliberately span continuous, discrete and mixed responses (GA, NO, LOGNO,
   WEI, IG, PO and ZAGA), because the routing and the reported estimand depend
   on the family.
-* There are two vignettes. `workflow.Rmd` is a short English overview.
-  `gamlssPosthoc-fundamentos.Rmd` is a longer treatment in Portuguese, the
-  maintainer's working language, covering the statistical background. Both
-  are rebuilt by `R CMD check`.
+* There are two vignettes, both in English. `workflow.Rmd` is a short
+  overview of the five decisions the package separates.
+  `gamlssPosthoc-foundations.Rmd` is a longer treatment of the statistical
+  background, with one section per exported function. Both are rebuilt by
+  `R CMD check`.
 * The package does not write to the user's file space, and does not modify
   `options()`, `par()` or the working directory.
 * The reference to Rigby and Stasinopoulos (2005) in the Description field
