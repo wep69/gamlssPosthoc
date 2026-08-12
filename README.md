@@ -151,6 +151,22 @@ install.packages("gamlssPosthoc_0.3.0.tar.gz", repos = NULL, type = "source")
 
 ---
 
+## Cheatsheets
+
+Two-page reference cards, one per language, in
+[`cheatsheets/`](cheatsheets):
+
+| Language | File |
+|---|---|
+| English | [gamlssPosthoc-cheatsheet-EN.pdf](cheatsheets/gamlssPosthoc-cheatsheet-EN.pdf) |
+| Portuguese | [gamlssPosthoc-cheatsheet-PT.pdf](cheatsheets/gamlssPosthoc-cheatsheet-PT.pdf) |
+
+They cover the five decisions, the estimand table, the engine routing rules, the
+uncertainty layers and the full plotting API on a single sheet. They are not
+shipped inside the installed package, so they do not affect its size.
+
+---
+
 ## Documentation
 
 Seven vignettes, all with executable code:

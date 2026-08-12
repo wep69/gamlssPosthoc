@@ -35,6 +35,7 @@
 ^tools/run_vdiffr\.R$
 
 ^PACKAGE_CONTENTS_0\.3\.0\.md$
+^cheatsheets$
 ^\.github$
 ^\.gitignore$
 ^\.gitattributes$
