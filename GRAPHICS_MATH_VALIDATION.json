@@ -1,0 +1,102 @@
+{
+  "overall": true,
+  "n_tests": 12,
+  "tests": [
+    {
+      "test": "marginal mixture quantile p=.8",
+      "target": 3.573854167565678,
+      "empirical": 3.571877631668263,
+      "abs_error": 0.001976535897414866,
+      "tolerance": 0.025,
+      "pass_": true
+    },
+    {
+      "test": "quantile fan is ordered",
+      "target": 1.0,
+      "empirical": 1.0,
+      "abs_error": 0.0,
+      "tolerance": 0.0,
+      "pass_": true
+    },
+    {
+      "test": "zero-adjusted quantile p=.7",
+      "target": 2.2666919520393205,
+      "empirical": 2.2705608547356113,
+      "abs_error": 0.00386890269629081,
+      "tolerance": 0.025,
+      "pass_": true
+    },
+    {
+      "test": "standardized predictive density integrates to one",
+      "target": 1.0,
+      "empirical": 0.9999999947011841,
+      "abs_error": 5.298815941578994e-09,
+      "tolerance": 0.0002,
+      "pass_": true
+    },
+    {
+      "test": "cdf plus survival",
+      "target": 1.0,
+      "empirical": 1.0,
+      "abs_error": 0.0,
+      "tolerance": 1e-12,
+      "pass_": true
+    },
+    {
+      "test": "ratio orientation A over B",
+      "target": 1.5,
+      "empirical": 1.5000000000000002,
+      "abs_error": 2.220446049250313e-16,
+      "tolerance": 1e-12,
+      "pass_": true
+    },
+    {
+      "test": "percent change orientation",
+      "target": 50.0,
+      "empirical": 50.00000000000002,
+      "abs_error": 2.1316282072803006e-14,
+      "tolerance": 1e-12,
+      "pass_": true
+    },
+    {
+      "test": "first derivative grid max error",
+      "target": 0.0,
+      "empirical": 2.042810365310288e-14,
+      "abs_error": 2.042810365310288e-14,
+      "tolerance": 1e-10,
+      "pass_": true
+    },
+    {
+      "test": "local optimum location",
+      "target": 2.5,
+      "empirical": 2.5000000000000053,
+      "abs_error": 5.329070518200751e-15,
+      "tolerance": 1e-10,
+      "pass_": true
+    },
+    {
+      "test": "local optimum response",
+      "target": 7.5,
+      "empirical": 7.499999999999996,
+      "abs_error": 4.440892098500626e-15,
+      "tolerance": 1e-10,
+      "pass_": true
+    },
+    {
+      "test": "PIT mean under calibrated normal residuals",
+      "target": 0.5,
+      "empirical": 0.4998318302108674,
+      "abs_error": 0.0001681697891325884,
+      "tolerance": 0.002,
+      "pass_": true
+    },
+    {
+      "test": "PIT variance under calibrated normal residuals",
+      "target": 0.08333333333333333,
+      "empirical": 0.08328577624014456,
+      "abs_error": 4.7557093188765887e-05,
+      "tolerance": 0.001,
+      "pass_": true
+    }
+  ]
+}

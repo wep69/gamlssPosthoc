@@ -97,36 +97,70 @@
   vars
 }
 
-## `gamlss:::predict.gamlss()` subsets the fitting data with
-## `data[match(names(newdata), names(data))]`, so any column present in the
-## prediction grid but absent from the fitting data raises
-## "undefined columns selected". The evaluation grid carries internal
-## bookkeeping columns (`.gph_group_id`, `.gph_weight`), which must be removed
-## before any prediction call reaches gamlss.
-.gph_clean_newdata <- function(newdata, data = NULL) {
-  if (is.null(newdata)) return(NULL)
-  newdata <- as.data.frame(newdata)
-  keep <- setdiff(names(newdata), grep("^\\.gph_", names(newdata), value = TRUE))
-  if (!is.null(data)) keep <- intersect(keep, names(as.data.frame(data)))
-  if (!length(keep)) return(newdata)
-  newdata[, keep, drop = FALSE]
-}
+# `vcov.gamlss()` (via `gen.likelihood()`) and `predict.gamlss()` both resolve
+# the fitted call's `data` argument *by name*, and the lookup only reaches the
+# global environment.  A model fitted inside a function, an example, or a test
+# therefore breaks the emmeans and marginaleffects engines.  When that name is
+# not currently bound, expose the user-supplied data under it for the duration
+# of the engine call and restore the workspace afterwards.
 
-## `gamlss:::gen.likelihood()`, reached from `vcov.gamlss()` and therefore from
-## every emmeans reference grid, re-resolves the fitting data by *name* with
-## `get(as.character(object$call["data"]))`. That lookup only searches the
-## gamlss namespace and the global environment, so it fails whenever the model
-## was fitted inside a function, a test, or any local scope. When `object$call`
-## carries no `data` element, `gen.likelihood()` skips the lookup entirely and
-## reconstructs everything from the fitted object, giving identical results.
-## The data itself is always supplied to emmeans explicitly via `data=`.
-.gph_emmeans_object <- function(object) {
-  if (is.null(object$call) || !"data" %in% names(object$call)) return(object)
-  object$call$data <- NULL
+# `predict.gamlss()` evaluates the fitted call's `data` argument, so storing the
+# data frame itself in the call makes the fit self-contained: the value is
+# returned directly instead of being looked up by name.  The user's object is
+# never modified; only the local copy handed to the engine is.
+.gph_self_contained <- function(object, data) {
+  if (!is.data.frame(data) || !is.list(object) || is.null(object$call)) return(object)
+  object$call$data <- data
   object
 }
 
-.gph_predict_parameter <- function(object, newdata, what, data = NULL) {
+# `vcov.gamlss()` goes through `gen.likelihood()`, which resolves the same
+# argument *by name* and only searches the global environment.  Dropping `data`
+# from the call makes `gen.likelihood()` use the components carried by the fit,
+# which is numerically identical.  Returns NULL when no covariance is available.
+.gph_safe_vcov <- function(object) {
+  v <- try(stats::vcov(object), silent = TRUE)
+  if (!inherits(v, "try-error") && is.matrix(v)) return(v)
+  o2 <- object
+  o2$call$data <- NULL
+  v <- try(stats::vcov(o2), silent = TRUE)
+  if (inherits(v, "try-error") || !is.matrix(v)) NULL else v
+}
+
+# emmeans builds a reference grid for a single distributional parameter, so it
+# needs the covariance block of that parameter rather than the full joint
+# matrix that `vcov.gamlss()` returns (blocks are stacked in parameter order).
+.gph_param_vcov <- function(object, what) {
+  v <- .gph_safe_vcov(object)
+  if (is.null(v)) return(NULL)
+  pars <- .gph_model_parameters(object)
+  if (!length(pars) || !what %in% pars) return(NULL)
+  sizes <- vapply(pars, function(p) {
+    z <- try(stats::coef(object, what = p), silent = TRUE)
+    if (inherits(z, "try-error")) NA_integer_ else length(z)
+  }, integer(1))
+  if (anyNA(sizes) || sum(sizes) != nrow(v)) {
+    return(if (nrow(v) == length(try(stats::coef(object, what = what), silent = TRUE))) v else NULL)
+  }
+  k <- match(what, pars)
+  start <- if (k == 1L) 0L else sum(sizes[seq_len(k - 1L)])
+  idx <- seq.int(start + 1L, start + sizes[k])
+  v[idx, idx, drop = FALSE]
+}
+
+# Internal bookkeeping columns (group ids, weights) must never reach
+# predict.gamlss(), which indexes the model frame by names(newdata).
+.gph_clean_newdata <- function(newdata, data = NULL) {
+  if (is.null(newdata) || !is.data.frame(newdata)) return(newdata)
+  keep <- !grepl("^\\.gph_", names(newdata))
+  if (!is.null(data)) keep <- keep & names(newdata) %in% names(data)
+  if (!any(keep)) return(newdata)
+  newdata[, names(newdata)[keep], drop = FALSE]
+}
+
+.gph_predict_parameter <- function(object, newdata, what, data = NULL,
+                                   type = c("response", "link")) {
+  type <- match.arg(type)
   pars <- .gph_model_parameters(object)
   if (!what %in% pars) {
     stop("Parameter '", what, "' is not available. Available parameters: ",
@@ -135,11 +169,19 @@
   newdata <- .gph_clean_newdata(newdata, data)
   if (.gph_is_zadj(object)) {
     return(as.numeric(stats::predict(object, parameter = what, newdata = newdata,
-                                     type = "response", data = data)))
+                                     type = type, data = data)))
   }
   # Current CRAN gamlss exposes `what` for its distributional parameters.
   as.numeric(stats::predict(object, what = what, newdata = newdata,
-                            type = "response", data = data))
+                            type = type, data = data))
+}
+
+.gph_predict_parameter_standardized <- function(object, eval_info, what, data = NULL,
+                                                scale = c("response", "link")) {
+  scale <- match.arg(scale)
+  z <- .gph_predict_parameter(object, eval_info$eval_data, what, data = data,
+                              type = scale)
+  .gph_aggregate(z, eval_info)
 }
 
 .gph_predict_parameters <- function(object, newdata, data = NULL) {

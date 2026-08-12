@@ -1,34 +1,30 @@
+# cran-comments
+
 ## Submission
 
-This is a new submission of `gamlssPosthoc`.
+This is an initial submission of `gamlssPosthoc` 0.3.0.
 
-The package provides post-hoc inference for GAMLSS models, keeping the
-estimand, the target population, the contrast geometry, the effect scale and
-the uncertainty layer as separate and explicitly recorded choices.
+The package provides a conservative post-hoc and visualization workflow for
+GAMLSS models. It separates estimands, target populations, contrast scales and
+uncertainty layers, routes supported operations to `emmeans` or
+`marginaleffects`, reconstructs full predictive distributions for derived
+quantities and zero-adjusted models, and supplies an auditable `ggplot2`
+data-first graphics layer.
 
 ## Test environments
 
-* win-builder, Windows Server 2022 x64, both:
-  * R-devel (2026-08-08 r90381 ucrt)
-  * R 4.6.1 release
-* macOS builder, R 4.6.1 release, macOS 26.6, arm64 (Apple M1).
-* Local: Windows 11 x64, R 4.6.0 (2026-04-24 ucrt), `R CMD check --as-cran`.
-* GitHub Actions, all with `--as-cran`:
-  * ubuntu-latest, R-devel
-  * ubuntu-latest, R release
-  * ubuntu-latest, R oldrel-1
-  * macos-latest, R release
-  * windows-latest, R release
+* Local: Windows 11 x86_64, R 4.6.0
+* win-builder: R Under development (unstable) (2026-08-10 r90389 ucrt),
+  x86_64-w64-mingw32, Windows Server 2022
+* win-builder: R 4.6.1 (2026-06-24 ucrt), x86_64-w64-mingw32, Windows Server 2022
+* macOS builder: R 4.6.1 Patched (2026-07-27 r90311), aarch64-apple-darwin23
 
 ## R CMD check results
 
-0 errors | 0 warnings | 1 note
+There were no ERRORs and no WARNINGs on any platform.
 
-The macOS builder reports `Status: OK`, with no errors, warnings or notes.
-
-Both win-builder runs, R-devel and R release, return the same single note:
-the expected one for a first-time submission, together with the usual
-spelling remark:
+macOS builder returned `Status: OK` with no notes at all. Both Windows builders
+returned one NOTE, reproduced and justified below.
 
 ```
 * checking CRAN incoming feasibility ... NOTE
@@ -37,47 +33,50 @@ Maintainer: 'Walter Esfrain Pereira <walterufpb@yahoo.com.br>'
 New submission
 
 Possibly misspelled words in DESCRIPTION:
-  GAMLSS (3:59, 9:43)
-  Rigby (16:8)
-  Stasinopoulos (16:18)
-  estimands (13:49)
+  Arel (20:40)
+  Bundock (20:45)
+  GAMLSS (4:9, 10:64)
+  Greifer (20:54)
+  Heiss (20:66)
+  Rigby (18:64)
+  Stasinopoulos (19:5)
+  estimands (11:23, 16:5)
 ```
 
-All four flagged words are correct and intentional:
+`New submission` is expected for a first submission.
 
-* **GAMLSS** is the standard acronym for generalized additive models for
-  location, scale and shape. It appears in the Title and in the Description,
-  and the Description introduces it with its full expansion, "generalized
-  additive models for location, scale and shape (GAMLSS)". It denotes the
-  model class, not a package; the 'gamlss' package itself is quoted in the
-  Description as required.
-* **Rigby** and **Stasinopoulos** are the surnames of the authors of the
-  cited reference, Rigby and Stasinopoulos (2005)
-  <doi:10.1111/j.1467-9876.2005.00510.x>.
-* **estimand** is established statistical terminology, used here in the sense
-  of ICH E9(R1) and of the causal-inference literature. It is central to the
-  package, which records the estimand of every result explicitly.
+Regarding the flagged words, none is a misspelling.
 
-## Notes for the reviewer
+* `Arel` and `Bundock` are one surname, Arel-Bundock, split by the spell checker
+  at the hyphen. `Greifer` and `Heiss` are the co-authors of the same cited work
+  (DOI 10.18637/jss.v111.i09).
+* `Rigby` and `Stasinopoulos` are the authors of the cited GAMLSS paper
+  (DOI 10.1111/j.1467-9876.2005.00510.x).
+* `GAMLSS` is an established acronym. The Description expands it in full at
+  first use, "generalized additive models for location, scale and shape
+  (GAMLSS)". It also appears in the Title, where expanding it would make the
+  title impractically long.
+* `estimands` is standard statistical terminology, the vocabulary of the
+  ICH E9(R1) addendum, and is the central concept of the package.
 
-* All modelling dependencies (`gamlss`, `gamlss.dist`, `gamlss.inf`,
-  `emmeans`, `marginaleffects`, `distributions3`, `multcompView`) are in
-  `Suggests`. Every use is conditional: the package code routes through an
-  internal `requireNamespace()` helper, all 23 example blocks are wrapped in
-  `requireNamespace()`, the tests use `skip_if_not_installed()`, and the
-  chunks of both vignettes are gated on availability. `Imports` is limited to
-  `graphics`, `stats` and `utils`.
-* Examples are executable and fast: 23 example blocks across seven help
-  topics, 1.4 seconds in total, the slowest topic at 0.9 seconds. They
-  deliberately span continuous, discrete and mixed responses (GA, NO, LOGNO,
-  WEI, IG, PO and ZAGA), because the routing and the reported estimand depend
-  on the family.
-* There are two vignettes, both in English. `workflow.Rmd` is a short
-  overview of the five decisions the package separates.
-  `gamlssPosthoc-foundations.Rmd` is a longer treatment of the statistical
-  background, with one section per exported function. Both are rebuilt by
-  `R CMD check`.
-* The package does not write to the user's file space, and does not modify
-  `options()`, `par()` or the working directory.
-* The reference to Rigby and Stasinopoulos (2005) in the Description field
-  uses the requested `<doi:...>` form.
+## Notes for the reviewers
+
+* All heavy dependencies are in `Suggests` and every example, test and vignette
+  chunk that touches them is guarded by `requireNamespace()`. The package
+  installs and loads with `Imports` only.
+* `gamlss` and `gamlss.inf` resolve some distribution functions by name from the
+  search path. The tests and the vignettes therefore attach `gamlss.dist`
+  explicitly. This is a documented requirement of those packages and not a
+  workaround for a check.
+* Uncertainty layers that require model refitting use small replication counts in
+  examples, tests and vignettes. The slowest check stage is the vignette
+  re-build, at 119 seconds on win-builder R-devel.
+* Nothing is written outside `tempdir()`. The examples that produce `.tex`,
+  `.docx` and `.md` files write to `tempdir()` only.
+* The package never assigns to the global environment.
+* Two `vdiffr` visual regression tests are skipped on CRAN, which is the
+  recommended practice for graphics snapshots.
+
+## Downstream dependencies
+
+None. This is a new package.

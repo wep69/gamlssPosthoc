@@ -1,0 +1,293 @@
+---
+title: "Missing Data. Multiple Imputation, GAMLSS and Post-Hoc Inference"
+author: "Walter Esfrain Pereira"
+output: rmarkdown::html_vignette
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{Missing Data. Multiple Imputation, GAMLSS and Post-Hoc Inference}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6, fig.height = 3.6)
+library(gamlssPosthoc)
+has_core <- requireNamespace("gamlss", quietly = TRUE) &&
+  requireNamespace("gamlss.dist", quietly = TRUE)
+has_dist <- has_core && requireNamespace("distributions3", quietly = TRUE)
+has_gg   <- has_core && requireNamespace("ggplot2", quietly = TRUE)
+has_mice <- has_core && requireNamespace("mice", quietly = TRUE)
+if (has_core) suppressPackageStartupMessages(library(gamlss.dist))
+```
+
+# 1. Principle
+
+`gamlssPosthoc` does not implement imputation, and it should not. Imputation is
+a modelling problem of its own, and delegating it to a specialized tool such as
+`mice` [@vanbuuren2011] keeps the two model specifications visible and auditable.
+
+The rule that organizes everything below is simple: **the same model and the same
+estimand must be computed in every imputed data set, and only then combined.**
+Combining first and estimating afterwards, or stacking the imputed data sets and
+treating them as independent observations, produces standard errors that are too
+small by roughly a factor of \(\sqrt{M}\).
+
+# 2. Rubin's rules
+
+Let \(\hat{Q}_m\) and \(U_m\) be the estimate and its within-imputation variance
+in imputation \(m = 1, \ldots, M\). The pooled quantities are [@rubin1987]
+
+\[
+\bar{Q} = \frac{1}{M}\sum_{m=1}^{M} \hat{Q}_m,
+\qquad
+\bar{U} = \frac{1}{M}\sum_{m=1}^{M} U_m,
+\tag{1}
+\]
+
+\[
+B = \frac{1}{M-1}\sum_{m=1}^{M}\left(\hat{Q}_m - \bar{Q}\right)^2,
+\qquad
+T = \bar{U} + \left(1 + \frac{1}{M}\right) B .
+\tag{2}
+\]
+
+The total variance \(T\) has two parts: the ordinary sampling variance
+\(\bar{U}\), and the extra variance \(B\) caused by not knowing the missing
+values. The factor \((1 + 1/M)\) is the finite-\(M\) correction.
+
+## 2.1 How many imputations are enough
+
+The diagnostic that answers this is the **fraction of missing information**,
+
+\[
+\gamma = \frac{\left(1 + M^{-1}\right) B}{T},
+\tag{3}
+\]
+
+which is the share of the total variance attributable to missingness. A common
+working rule is to take \(M\) at least equal to \(100\gamma\) rounded up, so a
+data set with \(\gamma \approx 0.3\) needs \(M \approx 30\), not the \(M = 5\)
+that older texts suggested. Report \(\gamma\); it tells the reader how much of
+the uncertainty is imputation and how much is sampling.
+
+## 2.2 Degrees of freedom in small samples
+
+The classical pooled degrees of freedom,
+
+\[
+\nu_{\text{old}} = (M - 1)\left(1 + \frac{\bar{U}}{\left(1 + M^{-1}\right)B}\right)^{2},
+\tag{4}
+\]
+
+can exceed the complete-data degrees of freedom, which is impossible. The
+Barnard and Rubin correction [@barnard1999] repairs this. With \(\nu_{\text{com}}\)
+the complete-data degrees of freedom,
+
+\[
+\hat\nu_{\text{obs}} = \frac{\nu_{\text{com}} + 1}{\nu_{\text{com}} + 3}\,
+\nu_{\text{com}}\,(1 - \gamma),
+\qquad
+\nu_{\text{adj}} = \left(\frac{1}{\nu_{\text{old}}} +
+\frac{1}{\hat\nu_{\text{obs}}}\right)^{-1}.
+\tag{5}
+\]
+
+Use equation (5) whenever the analysis sample is small, which in agronomic field
+trials is the normal case.
+
+# 3. Executable workflow
+
+The block below runs the complete cycle: generate missingness, impute, fit a
+GAMLSS per imputation, compute the same post-hoc estimand, and pool. `M` is kept
+small so the vignette builds quickly; use `M` guided by equation (3) in real
+work.
+
+```{r data, eval=has_mice}
+set.seed(6001)
+n <- 120
+d <- data.frame(
+  trt = factor(rep(c("Control", "Bio"), each = n / 2), levels = c("Control", "Bio")),
+  x   = stats::rnorm(n, 50, 10)
+)
+d$y <- gamlss.dist::rGA(n,
+  mu = exp(0.6 + 0.25 * (d$trt == "Bio") + 0.010 * (d$x - 50)),
+  sigma = 0.30)
+
+# MAR: the covariate is missing more often in the treated group
+p_mis <- ifelse(d$trt == "Bio", 0.30, 0.10)
+d$x[stats::rbinom(n, 1, p_mis) == 1] <- NA
+sum(is.na(d$x))
+```
+
+```{r impute, eval=has_mice}
+M <- 5L
+imp <- mice::mice(d, m = M, printFlag = FALSE, seed = 6002)
+imp$method
+```
+
+```{r analyse, eval=has_mice && has_dist}
+one_fit <- function(m) {
+  dm <- mice::complete(imp, m)
+  fit <- gamlss::gamlss(y ~ trt + x, family = gamlss.dist::GA,
+                        data = dm, trace = FALSE)
+  ph <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+                       comparison = "log_ratio", engine = "distribution",
+                       uncertainty = "bootstrap", B = 39L, data = dm)
+  c(Q = ph$contrasts$estimate[1], U = ph$contrasts$SE[1]^2)
+}
+est <- t(vapply(seq_len(M), one_fit, numeric(2)))
+est <- as.data.frame(est)
+est$imputation <- seq_len(M)
+est
+```
+
+```{r pool, eval=has_mice && has_dist}
+pool_rubin <- function(Q, U, nu_com) {
+  M  <- length(Q)
+  Qb <- mean(Q); Ub <- mean(U)
+  B  <- stats::var(Q)
+  T_ <- Ub + (1 + 1 / M) * B
+  gamma <- (1 + 1 / M) * B / T_
+  nu_old <- (M - 1) * (1 + Ub / ((1 + 1 / M) * B))^2
+  nu_obs <- ((nu_com + 1) / (nu_com + 3)) * nu_com * (1 - gamma)
+  nu_adj <- 1 / (1 / nu_old + 1 / nu_obs)
+  tcrit <- stats::qt(0.975, df = nu_adj)
+  data.frame(estimate = Qb, se = sqrt(T_),
+             lower = Qb - tcrit * sqrt(T_),
+             upper = Qb + tcrit * sqrt(T_),
+             fmi = gamma, df = nu_adj)
+}
+pooled <- pool_rubin(est$Q, est$U, nu_com = nrow(d) - 3)
+pooled
+# Back to the ratio scale, which is where the result is reported
+data.frame(ratio = exp(pooled$estimate),
+           lower = exp(pooled$lower),
+           upper = exp(pooled$upper))
+```
+
+```{r pool-plot, eval=has_gg && has_mice && has_dist}
+pd <- data.frame(scale = "log-ratio", estimate = pooled$estimate,
+                 lower = pooled$lower, upper = pooled$upper)
+ggplot2::ggplot(pd, ggplot2::aes(x = estimate, y = scale)) +
+  ggplot2::geom_vline(xintercept = 0, linetype = 2) +
+  ggplot2::geom_errorbar(ggplot2::aes(xmin = lower, xmax = upper),
+                         width = 0.15, orientation = "y") +
+  ggplot2::geom_point(size = 2.5) +
+  ggplot2::labs(x = "Pooled log-ratio, Bio versus Control", y = NULL,
+                title = "Rubin-pooled post-hoc contrast") +
+  theme_gamlss()
+```
+
+# 4. The scale on which to pool
+
+Rubin's rules assume that \(\hat{Q}_m\) is approximately normal with a stable
+within-imputation variance. That assumption is comfortable for a difference of
+means and uncomfortable for the quantities distributional models produce most
+often.
+
+| Estimand | Pool on | Reason |
+|---|---|---|
+| difference of means | the difference itself | already symmetric |
+| ratio, percent change | the log-ratio, then back-transform | ratios are bounded below by zero and right-skewed |
+| variance, dispersion | the log | positive and right-skewed |
+| probability, zero mass | the logit | bounded in the unit interval |
+| quantile | the quantile itself, or the log for a positive response | usually mildly skewed |
+| optimum located by root-finding | do not pool analytically | the sampling distribution can be multimodal |
+
+For the last row, and for any estimand whose sampling distribution is clearly
+non-normal, pool the *draws* rather than the summaries: collect the bootstrap or
+simulation draws from every imputation into one pooled set and read the interval
+off its quantiles. That approach requires `keep_draws = TRUE` and makes no
+normality assumption at all.
+
+Whatever is chosen, state it. "Pooled on the log scale and back-transformed" is
+one clause in a methods section and removes an entire class of ambiguity.
+
+# 5. What the missingness mechanism implies
+
+| Mechanism | Definition | Consequence for the post-hoc analysis |
+|---|---|---|
+| MCAR | missingness independent of observed and unobserved data | complete-case analysis is unbiased but wasteful |
+| MAR | missingness depends only on observed data | multiple imputation is valid, provided the imputation model includes the variables that drive missingness |
+| MNAR | missingness depends on the unobserved value itself | no imputation model based on observed data is sufficient; sensitivity analysis is mandatory |
+
+MAR is an assumption about the *imputation model*, not a property of the data.
+It becomes more plausible as more of the variables predicting missingness are
+included, which is why the imputation model should normally be richer than the
+analysis model, including the outcome and the treatment indicator.
+
+## 5.1 Sensitivity analysis under MNAR
+
+The standard device is a delta adjustment. Shift the imputed values by a fixed
+amount \(\delta\) on the analysis scale, repeat the whole pipeline, and report
+how far \(\delta\) must depart from zero before the conclusion changes.
+
+```{r mnar, eval=has_mice && has_dist}
+delta_analysis <- function(delta) {
+  vals <- vapply(seq_len(M), function(m) {
+    dm <- mice::complete(imp, m)
+    dm$x[is.na(d$x)] <- dm$x[is.na(d$x)] + delta
+    fit <- gamlss::gamlss(y ~ trt + x, family = gamlss.dist::GA,
+                          data = dm, trace = FALSE)
+    gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+                   comparison = "log_ratio", engine = "distribution",
+                   uncertainty = "none", data = dm)$contrasts$estimate[1]
+  }, numeric(1))
+  mean(vals)
+}
+deltas <- c(-10, -5, 0, 5, 10)
+data.frame(delta = deltas,
+           pooled_log_ratio = round(vapply(deltas, delta_analysis, numeric(1)), 4))
+```
+
+If the sign and the practical size of the effect survive the plausible range of
+\(\delta\), the conclusion is robust to a departure from MAR of that magnitude.
+That is a much stronger statement than asserting MAR and moving on.
+
+# 6. Missingness in the scale predictor
+
+This case is specific to distributional regression and is almost absent from the
+imputation literature. In a GAMLSS the same covariate can appear in
+`mu.formula` and in `sigma.formula`. Two consequences follow.
+
+First, the imputation model must be compatible with *both* roles. An imputation
+model that preserves the conditional mean of `x` given the other variables but
+destroys its association with the residual spread will bias the fitted dispersion
+even if the mean structure is recovered correctly.
+
+Second, the fraction of missing information is generally larger for a dispersion
+estimand than for a mean estimand computed from the same imputations, because
+second-order features are estimated less precisely. Reporting \(\gamma\)
+separately for each estimand is therefore informative rather than redundant.
+
+```{r fmi-by-estimand, eval=has_mice && has_dist}
+fmi_for <- function(estimand) {
+  z <- t(vapply(seq_len(M), function(m) {
+    dm <- mice::complete(imp, m)
+    fit <- gamlss::gamlss(y ~ trt + x, sigma.formula = ~ x,
+                          family = gamlss.dist::GA, data = dm, trace = FALSE)
+    ph <- gamlss_posthoc(fit, "trt", estimand = estimand, contrast = "pairwise",
+                         comparison = "log_ratio", engine = "distribution",
+                         uncertainty = "bootstrap", B = 29L, data = dm)
+    c(ph$contrasts$estimate[1], ph$contrasts$SE[1]^2)
+  }, numeric(2)))
+  B <- stats::var(z[, 1]); Ub <- mean(z[, 2])
+  T_ <- Ub + (1 + 1 / M) * B
+  data.frame(estimand = estimand, fmi = round((1 + 1 / M) * B / T_, 4))
+}
+do.call(rbind, lapply(c("mean", "variance"), fmi_for))
+```
+
+# 7. What not to do
+
+- Do not concatenate the imputed data sets and analyse them as one file. The
+  sample size is inflated \(M\)-fold and every standard error is wrong.
+- Do not impute the outcome and then discard the imputed outcome rows. That
+  discards information and reintroduces selection.
+- Do not pool a ratio directly and report a symmetric interval around it. The
+  lower limit can fall below zero, which is impossible for a ratio.
+- Do not report a pooled estimate without \(\gamma\). Without it the reader
+  cannot tell whether the interval is driven by the data or by the missingness.
+
+# References

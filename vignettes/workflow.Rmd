@@ -2,6 +2,8 @@
 title: "Estimands, Standardization, and Contrasts after GAMLSS"
 author: "Walter Esfrain Pereira"
 output: rmarkdown::html_vignette
+bibliography: references.bib
+link-citations: true
 vignette: >
   %\VignetteIndexEntry{Estimands, Standardization, and Contrasts after GAMLSS}
   %\VignetteEngine{knitr::rmarkdown}
@@ -15,10 +17,10 @@ has_core <- requireNamespace("gamlss", quietly = TRUE) &&
   requireNamespace("gamlss.dist", quietly = TRUE)
 has_dist <- has_core && requireNamespace("distributions3", quietly = TRUE)
 has_zadj <- has_dist && requireNamespace("gamlss.inf", quietly = TRUE)
-# `gamlss.inf::gamlssZadj()` resolves the density and CDF of the positive
-# family by name with `eval(parse(text = ...))`, so gamlss.dist must be
-# attached rather than merely namespace-loaded.
-if (has_core) suppressMessages(library(gamlss.dist))
+has_emm  <- has_core && requireNamespace("emmeans", quietly = TRUE)
+# gamlss.inf resolves distribution functions such as pGG() by name from the
+# search path, so gamlss.dist must be attached, not merely loaded.
+if (has_zadj) suppressPackageStartupMessages(library(gamlss.dist))
 ```
 
 ## Five separate decisions
@@ -34,6 +36,107 @@ A post-hoc analysis after GAMLSS should state five decisions explicitly:
 
 `gamlssPosthoc` stores these choices in the returned object instead of using the
 ambiguous phrase "adjusted means" for all of them.
+
+## What an estimand is, formally
+
+A GAMLSS specifies a full conditional distribution [@rigby2005],
+
+\[
+Y_i \sim \mathcal{D}(\theta_{1i},\ldots,\theta_{pi}),\qquad
+g_k(\theta_{ki}) = \eta_{ki} = \mathbf{x}_{ki}^{\top}\boldsymbol{\beta}_k
++ \sum_j s_{kj}(x_{kji}).
+\]
+
+Every quantity this package reports is a functional \(T\) of a *standardized*
+predictive distribution. Fix a level \(g\) of the focal factor, keep the
+remaining covariates at their observed values, and average the conditional
+distributions,
+
+\[
+F_g(y) \;=\; \sum_{i=1}^{n} w_i\, F\!\left(y \mid \mathbf{X}_i,\, g\right),
+\qquad w_i \ge 0,\quad \sum_i w_i = 1 .
+\tag{1}
+\]
+
+The estimand is then \(T(F_g)\). The package options map onto \(T\) as follows.
+
+| `estimand` | Functional \(T(F)\) |
+|---|---|
+| `parameter` | \(\theta_k\), a coordinate of the parameter vector, not a functional of \(F\) as a whole |
+| `mean` | \(\int y \, dF(y)\) |
+| `variance` | \(\int y^2 dF(y) - \left(\int y\, dF(y)\right)^2\) |
+| `quantile` | \(F^{-1}(p)\), solved from \(\sum_i w_i F_i(q_p) = p\) |
+| `prob_zero` | \(F(0) - F(0^-)\), the exact point mass |
+| `custom` | any user-supplied \(T\) |
+
+This is why `estimand` and `what` are separate arguments. `what` selects a
+coordinate \(k\); `estimand` selects the functional. Reporting "the mean" and
+"mu" as if they were the same quantity is the single most common error in
+applied GAMLSS post-hoc work, and under a non-identity link they are not equal.
+
+## Why the mean is not the back-transformed linear predictor
+
+Under a log link, \(\mu_i = \exp(\eta_i)\). Because the exponential is strictly
+convex, Jensen's inequality gives
+
+\[
+\mathrm{E}\!\left[g^{-1}(\eta)\right] \;>\; g^{-1}\!\left(\mathrm{E}[\eta]\right)
+\]
+
+whenever \(\eta\) varies across the population being averaged. The gap is not a
+rounding artifact; it grows with the dispersion of \(\eta\). The following block
+computes both quantities on the same fit.
+
+```{r jensen, eval=has_core}
+set.seed(2026)
+dj <- data.frame(
+  trt  = factor(rep(c("Control", "A"), each = 40)),
+  dose = rep(seq(0, 120, length.out = 40), 2)
+)
+mj <- exp(0.7 + 0.010 * dj$dose + 0.30 * (dj$trt == "A"))
+dj$y <- gamlss.dist::rGA(nrow(dj), mu = mj, sigma = 0.35)
+fj <- gamlss::gamlss(y ~ trt + dose, family = gamlss.dist::GA,
+                     data = dj, trace = FALSE)
+
+# Standardized mean of the back-transformed predictions, which is equation (1)
+nd_a <- transform(dj, trt = factor("A", levels = levels(dj$trt)))
+nd_c <- transform(dj, trt = factor("Control", levels = levels(dj$trt)))
+m_a <- mean(stats::predict(fj, what = "mu", newdata = nd_a,
+                           type = "response", data = dj))
+m_c <- mean(stats::predict(fj, what = "mu", newdata = nd_c,
+                           type = "response", data = dj))
+
+# Back-transformation of the averaged linear predictor, which is not the mean
+e_a <- exp(mean(stats::predict(fj, what = "mu", newdata = nd_a,
+                               type = "link", data = dj)))
+e_c <- exp(mean(stats::predict(fj, what = "mu", newdata = nd_c,
+                               type = "link", data = dj)))
+
+data.frame(level = c("Control", "A"),
+           standardized_mean = c(m_c, m_a),
+           back_transformed  = c(e_c, e_a),
+           relative_gap = c(m_c / e_c - 1, m_a / e_a - 1))
+```
+
+The two columns differ, and the difference propagates to any contrast built on
+top of them. `gamlssPosthoc` always reports the first column.
+
+## Mapping to the ICH E9(R1) estimand attributes
+
+The regulatory estimand framework [@ich2019] has become the common vocabulary
+for describing what a number means before describing how it was computed. The
+correspondence with the package arguments is direct.
+
+| ICH E9(R1) attribute | `gamlssPosthoc` argument |
+|---|---|
+| Population | `population`, `weights`, `grid` |
+| Variable, or endpoint | `estimand`, `what`, `prob`, `custom_fun` |
+| Treatment condition | `specs`, `at` |
+| Population-level summary | `contrast`, `comparison` |
+| Intercurrent event handling | analyst's responsibility, recorded in `at` and in the fitted model |
+
+Writing these five attributes into a methods section is enough to make a GAMLSS
+post-hoc analysis reproducible by a reader who does not have the code.
 
 ## Gamma example and the diagnostic plan
 
@@ -52,11 +155,11 @@ The plan reports model class, family, discovered parameters, smooth terms,
 optional package availability, a per-parameter capability matrix, engine
 eligibility, and a recommended inference route.
 
-For a simple parameter-wise request, `emmeans` is selected automatically only
-when the target is explicitly `population = "reference"`. This prevents an
-observed-population estimand from being silently replaced by an EMM reference
-grid. Observed or balanced standardization is routed through prediction-based
-engines.
+For a simple parameter-wise request, `emmeans` [@lenth_emmeans] is selected
+automatically only when the target is explicitly `population = "reference"`.
+This prevents an observed-population estimand from being silently replaced by an
+EMM reference grid. Observed or balanced standardization is routed through
+prediction-based engines [@arelbundock2024].
 
 ## The estimand is explicit
 
@@ -75,12 +178,36 @@ ans$estimand_info
 ans$contrasts
 ```
 
-The comparison scale is independent of which levels are compared. Replacing
-`comparison = "percent_change"` by `"difference"`, `"ratio"`, or
-`"log_ratio"` changes the scientific effect without changing the reference
-geometry. For standardized marginal means, percent change is defined as
-`100 * (mean_hi / mean_lo - 1)`; it is not the average of row-specific percent
-changes.
+## The comparison scale is a separate decision
+
+The comparison scale is independent of which levels are compared. Let
+\(\bar{T}_g = T(F_g)\) denote the standardized estimand at level \(g\). For two
+levels \(a\) and \(b\), the four supported scales are
+
+\[
+\begin{aligned}
+\text{difference} &: \bar{T}_a - \bar{T}_b, \\
+\text{ratio} &: \bar{T}_a / \bar{T}_b, \\
+\text{log-ratio} &: \log\bar{T}_a - \log\bar{T}_b, \\
+\text{percent change} &: 100\left(\bar{T}_a / \bar{T}_b - 1\right).
+\end{aligned}
+\]
+
+Two consequences deserve emphasis. First, the ratio is computed from the two
+standardized estimands, so it is a ratio of averages and not the average of the
+row-wise ratios; those two quantities are different whenever the covariate
+distribution is not degenerate. Second, the log-ratio is the only one of the
+four that is approximately symmetric and approximately normal in small samples,
+which makes it the safer scale for pooling and for meta-analysis.
+
+```{r scales, eval=has_dist}
+scales <- c("difference", "ratio", "log_ratio", "percent_change")
+do.call(rbind, lapply(scales, function(s) {
+  z <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "reference",
+                      comparison = s, uncertainty = "none", data = d)$contrasts
+  data.frame(scale = s, comparison = z$comparison, estimate = round(z$estimate, 4))
+}))
+```
 
 ## Generic zero-adjusted distributions
 
@@ -98,10 +225,15 @@ and
 + h(1-h)\{E(Y_+)\}^2.
 \]
 
-Version 0.2.0 reconstructs the positive distribution through
-`gamlss.dist::GAMLSS()` whenever possible. Therefore, a generalized Gamma or
-another compatible positive family no longer needs a hand-written formula for
-its mean, variance, or quantiles.
+The variance formula is the law of total variance applied to the Bernoulli
+indicator of a positive observation, and the second term is exactly the
+between-component contribution that an analysis restricted to positive values
+would discard.
+
+The package reconstructs the positive distribution through
+`gamlss.dist::GAMLSS()` whenever possible [@rigby2019]. Therefore, a generalized
+Gamma or another compatible positive family no longer needs a hand-written
+formula for its mean, variance, or quantiles.
 
 ```{r zadj-example, eval=has_zadj}
 set.seed(2027)
@@ -124,11 +256,35 @@ moment.
 
 ## Layered uncertainty
 
-The package supports several layers:
+Let \(\hat{\boldsymbol{\beta}}\) be the fitted coefficient vector with estimated
+covariance \(\hat{V}\), and let the estimand be \(\psi = h(\boldsymbol{\beta})\).
+The delta method uses the first-order expansion
 
-- `delta`: native covariance-based inference where the selected engine supports it;
-- `simulation`: coefficient simulation through `marginaleffects` when available;
-- `bootstrap`: model refitting for generic derived targets;
+\[
+\operatorname{Var}(\hat\psi) \;\approx\;
+\nabla h(\hat{\boldsymbol{\beta}})^{\top}\,\hat{V}\,
+\nabla h(\hat{\boldsymbol{\beta}}) .
+\tag{2}
+\]
+
+Equation (2) is trustworthy when \(h\) is smooth and close to linear over the
+region where \(\hat{\boldsymbol{\beta}}\) has appreciable mass. For a
+distributional parameter on the link scale that condition normally holds. For a
+functional of the whole predictive distribution, such as a marginal variance, a
+mixture quantile, or an optimum located by root-finding, it often does not, and
+in current `gamlss` there is additionally no reliable joint covariance interface
+across all parameter blocks. The package therefore refuses to fabricate a delta
+interval in that situation and falls back to a refit bootstrap.
+
+The layers are:
+
+- `delta`: covariance-based inference through equation (2), where the selected
+  engine supports it;
+- `simulation`: coefficient simulation through `marginaleffects` when available,
+  which relaxes the linearity requirement but keeps the normal approximation for
+  \(\hat{\boldsymbol{\beta}}\);
+- `bootstrap`: model refitting for generic derived targets, the only layer that
+  makes no local-linearity assumption;
 - `none`: plug-in point estimates.
 
 The `auto` mode avoids silently launching hundreds of model refits. Use
@@ -138,7 +294,17 @@ The `auto` mode avoids silently launching hundreds of model refits. Use
 
 `gamlss_trend()` is intentionally different from a polynomial contrast among
 factor levels. For a numeric dose it can report the curve, first or second
-numerical derivatives, turning points, and optima refined by a local quadratic interpolation when the grid extremum is internal and has compatible curvature.
+numerical derivatives, turning points, and optima refined by a local quadratic
+interpolation when the grid extremum is internal and has compatible curvature.
+
+Derivatives are computed by central differences on the standardized estimand,
+
+\[
+\widehat{T}'(x) \approx \frac{\bar{T}(x+\delta) - \bar{T}(x-\delta)}{2\delta},
+\]
+
+so they inherit the target population of the estimand itself rather than
+describing a single covariate profile.
 
 ```{r quantitative, eval=has_dist}
 set.seed(2028)
@@ -153,7 +319,30 @@ gamlss_trend(qfit, "dose", at_x = g, method = "turning_points",
              estimand = "mean", uncertainty = "none", data = qd)$special_points
 ```
 
+When a simultaneous band is requested, the package rescales the pointwise
+standard errors by a critical value obtained from the maximum absolute
+studentized deviation across the grid,
+
+\[
+c_{1-\alpha} = \text{quantile}_{1-\alpha}\left(
+\max_{x \in \mathcal{G}} \left| \frac{T^{(b)}(x) - \bar{T}(x)}{\widehat{se}(x)} \right|
+\right),
+\]
+
+which controls coverage over the whole curve rather than at each point
+separately. A pointwise band is narrower and answers a different question.
+
 First derivatives of an ordinary distributional parameter can also be delegated
 to `marginaleffects::avg_slopes()` when that package and the model interface are
 available. Higher derivatives and full-distribution targets remain
 prediction-based.
+
+## Where to go next
+
+- `vignette("estimands-and-standardization")` develops the target population
+  formally and shows how much a conclusion can move between the three choices.
+- `vignette("case-study-agronomy")` runs one complete analysis, from design to a
+  written Results paragraph.
+- `vignette("cookbook")` gives three worked calls for every exported function.
+
+## References

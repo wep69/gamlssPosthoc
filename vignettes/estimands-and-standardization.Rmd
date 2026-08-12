@@ -1,0 +1,273 @@
+---
+title: "Standardization and the Choice of Target Population"
+author: "Walter Esfrain Pereira"
+output: rmarkdown::html_vignette
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{Standardization and the Choice of Target Population}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6, fig.height = 3.6)
+library(gamlssPosthoc)
+has_core <- requireNamespace("gamlss", quietly = TRUE) &&
+  requireNamespace("gamlss.dist", quietly = TRUE)
+has_dist <- has_core && requireNamespace("distributions3", quietly = TRUE)
+has_gg   <- has_core && requireNamespace("ggplot2", quietly = TRUE)
+has_emm  <- has_core && requireNamespace("emmeans", quietly = TRUE)
+if (has_core) suppressPackageStartupMessages(library(gamlss.dist))
+```
+
+# 1. The question this vignette answers
+
+Two analysts fit the same GAMLSS to the same data, request "the difference
+between treatments", and obtain different numbers. Neither made a mistake. They
+answered different questions, because they averaged over different populations.
+
+This vignette makes that choice explicit, gives the three weighting rules the
+package implements, and quantifies how much a published conclusion can move
+between them.
+
+# 2. Standardization as a plug-in of the g-formula
+
+Let \(A\) denote the focal factor, \(\mathbf{X}\) the remaining covariates, and
+\(Y^{a}\) the response that would be observed under level \(a\). Under the usual
+identification conditions of conditional exchangeability, positivity, and
+consistency, the marginal distribution of the potential outcome is recovered by
+averaging the conditional model over the covariate distribution [@robins1986],
+
+\[
+P\!\left(Y^{a} \le y\right)
+= \int P\!\left(Y \le y \mid A = a, \mathbf{X} = \mathbf{x}\right)\,
+  dP(\mathbf{x}).
+\tag{1}
+\]
+
+A GAMLSS supplies the inner conditional distribution in closed form, since it
+models every distributional parameter. Replacing \(dP(\mathbf{x})\) by a discrete
+weighting \(\{w_i\}\) over the sample yields the plug-in estimator that this
+package computes,
+
+\[
+\widehat{F}_a(y) = \sum_{i=1}^{n} w_i\,
+\mathcal{D}\!\left(y \;\middle|\; \hat\theta_1(\mathbf{X}_i, a), \ldots,
+\hat\theta_p(\mathbf{X}_i, a)\right),
+\qquad \sum_i w_i = 1 .
+\tag{2}
+\]
+
+Any reported estimand is then \(T(\widehat{F}_a)\) for a functional \(T\).
+
+Two remarks matter in practice. Equation (2) is a *model-based*
+standardization, so its validity rests on the GAMLSS being adequate for the
+conditional distribution and not only for its mean. And the word "causal" is
+earned only when the identification conditions hold by design; in an
+observational study equation (2) is still a well-defined descriptive summary,
+but it is not a causal contrast.
+
+# 3. The three weighting rules
+
+The package exposes three target populations. They differ only in \(w_i\) and in
+which rows enter the sum.
+
+| `population` | Rows used | Weight \(w_i\) | Question answered |
+|---|---|---|---|
+| `"observed"` | all \(n\) rows, with the focal factor set to \(a\) | \(w_i = 1/n\), or user weights | What would the average response be if this same population received \(a\)? |
+| `"balanced"` | all \(n\) rows | \(w_i \propto 1 / n_{c(i)}\), with \(n_{c}\) the size of the covariate cell of row \(i\) | What would it be in a population where the covariate cells are equally frequent? |
+| `"reference"` | one row per covariate combination | \(w_i = 1 / K\) over the \(K\) grid cells | What is it at a constructed reference profile? |
+
+Formally, writing \(c(i)\) for the covariate cell of row \(i\),
+
+\[
+w_i^{\text{obs}} = \frac{1}{n}, \qquad
+w_i^{\text{bal}} = \frac{1/n_{c(i)}}{\sum_{j} 1/n_{c(j)}}, \qquad
+w_i^{\text{ref}} = \frac{1}{K}\,\mathbb{1}\{i \in \mathcal{G}\}.
+\]
+
+The observed population is the default because it is the only one that requires
+no assumption beyond the fitted model. The balanced population answers a
+counterfactual demographic question and should be declared as such. The
+reference population is a *profile*, not a population, and is the only one for
+which `emmeans` is automatically eligible in this package, precisely because a
+reference grid is what `emmeans` constructs [@lenth_emmeans].
+
+# 4. A design where the three disagree
+
+The three rules coincide only when the covariate distribution is the same in
+every treatment group and the link is the identity. The example below violates
+both conditions on purpose: the covariate `soil` is unbalanced across
+treatments, and the family has a log link.
+
+```{r data, eval=has_core}
+set.seed(4101)
+n_cell <- c("Control.Sandy" = 40, "Control.Clay" = 10,
+            "Bio.Sandy"     = 10, "Bio.Clay"     = 40)
+cells <- do.call(rbind, lapply(names(n_cell), function(k) {
+  parts <- strsplit(k, ".", fixed = TRUE)[[1]]
+  data.frame(trt = parts[1], soil = parts[2], n = n_cell[[k]])
+}))
+d <- cells[rep(seq_len(nrow(cells)), cells$n), c("trt", "soil")]
+d$trt  <- factor(d$trt,  levels = c("Control", "Bio"))
+d$soil <- factor(d$soil, levels = c("Sandy", "Clay"))
+rownames(d) <- NULL
+
+# Clay soil is more productive, and the treatment effect is multiplicative
+eta <- 0.55 + 0.28 * (d$trt == "Bio") + 0.45 * (d$soil == "Clay")
+d$y  <- gamlss.dist::rGA(nrow(d), mu = exp(eta), sigma = 0.32)
+table(d$trt, d$soil)
+```
+
+The design is strongly unbalanced: the treated group sits mostly on the more
+productive soil. A naive group mean would attribute the soil advantage to the
+treatment.
+
+```{r fit, eval=has_core}
+fit <- gamlss::gamlss(y ~ trt + soil, sigma.formula = ~ soil,
+                      family = gamlss.dist::GA, data = d, trace = FALSE)
+# The raw group means are confounded by soil
+tapply(d$y, d$trt, mean)
+```
+
+# 5. The same contrast under the three populations
+
+```{r three-populations, eval=has_dist}
+pops <- c("observed", "balanced")
+rows <- lapply(pops, function(p) {
+  z <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+                      comparison = "difference", population = p,
+                      uncertainty = "none", data = d)
+  data.frame(population = p, comparison = z$contrasts$comparison,
+             estimate = round(z$contrasts$estimate, 4))
+})
+if (has_emm) {
+  zr <- gamlss_posthoc(fit, "trt", estimand = "parameter", what = "mu",
+                       contrast = "pairwise", population = "reference",
+                       engine = "emmeans", uncertainty = "none", data = d)
+  rows[[length(rows) + 1L]] <- data.frame(
+    population = "reference (mu, link scale)",
+    comparison = as.character(zr$contrasts[[1]]),
+    estimate = round(zr$contrasts$estimate, 4))
+}
+do.call(rbind, rows)
+```
+
+The observed and balanced estimates are both defensible, and they are not the
+same number. The reference row is deliberately labelled with its scale, because
+an `emmeans` contrast of `mu` under a log link is a difference of linear
+predictors, that is, a log-ratio, and not a difference of means.
+
+# 6. Why the ratio of averages is not the average of ratios
+
+For a multiplicative model the ratio scale is often the natural one. It is
+tempting to compute a ratio for each observation and average them. That is a
+different estimand:
+
+\[
+\frac{\sum_i w_i \bar{T}_{a}(\mathbf{X}_i)}{\sum_i w_i \bar{T}_{b}(\mathbf{X}_i)}
+\;\ne\;
+\sum_i w_i \frac{\bar{T}_{a}(\mathbf{X}_i)}{\bar{T}_{b}(\mathbf{X}_i)}
+\]
+
+unless the row-wise ratios are constant. The package computes the left-hand
+side, a ratio of standardized estimands, and records the choice in
+`estimand_info`.
+
+```{r ratio-of-averages, eval=has_dist}
+nd_bio <- transform(d, trt = factor("Bio", levels = levels(d$trt)))
+nd_ctl <- transform(d, trt = factor("Control", levels = levels(d$trt)))
+p_bio <- stats::predict(fit, what = "mu", newdata = nd_bio,
+                        type = "response", data = d)
+p_ctl <- stats::predict(fit, what = "mu", newdata = nd_ctl,
+                        type = "response", data = d)
+
+pkg <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+                      comparison = "ratio", uncertainty = "none",
+                      data = d)$contrasts$estimate
+
+data.frame(
+  quantity = c("ratio of standardized means (package)",
+               "average of row-wise ratios"),
+  value = round(c(pkg, mean(p_bio / p_ctl)), 5)
+)
+```
+
+In this particular model the two happen to agree closely because the treatment
+enters additively on the log scale with no interaction. Add a `trt:soil`
+interaction and they separate; the point is that the equality is a special case,
+not a rule, and only one of the two is the standardized estimand.
+
+# 7. Weights supplied by the analyst
+
+Numeric weights are accepted directly and are normalized internally. This covers
+survey weights, plot area, and any external standard population.
+
+```{r weights, eval=has_dist}
+# Give clay plots twice the weight of sandy plots, as an external standard
+w <- ifelse(d$soil == "Clay", 2, 1)
+gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+               comparison = "difference", weights = w,
+               uncertainty = "none", data = d)$contrasts
+```
+
+One warning is built into the package and deserves repeating here. Under a
+weighted population, a non-linear comparison such as a ratio or a percent change
+cannot be delegated to `marginaleffects::avg_comparisons()` without changing its
+meaning, so that route is disabled and the distribution engine is used instead.
+
+# 8. Standardization applies to the whole distribution
+
+Nothing in equation (2) is specific to the mean. The same weights produce a
+standardized variance, a standardized quantile, and a standardized exact zero
+mass. This is where a distributional model earns its keep: a treatment can leave
+the mean untouched and still halve the dispersion.
+
+```{r whole-distribution, eval=has_dist}
+targets <- c("mean", "variance")
+do.call(rbind, lapply(targets, function(tg) {
+  z <- gamlss_posthoc(fit, "trt", estimand = tg, contrast = "pairwise",
+                      comparison = "ratio", uncertainty = "none", data = d)
+  data.frame(estimand = tg, comparison = z$contrasts$comparison,
+             ratio = round(z$contrasts$estimate, 4))
+}))
+```
+
+```{r dist-picture, eval=has_gg && has_dist}
+plot_gamlss_distribution(fit, "trt", type = "density", data = d,
+                         n_response = 60L) +
+  ggplot2::labs(subtitle = "Standardized over the observed covariate distribution")
+```
+
+# 9. Reporting checklist
+
+A methods sentence that pins the estimand down completely needs five items, and
+all five are stored in the returned object:
+
+```{r report, eval=has_dist}
+ans <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+                      comparison = "ratio", population = "observed",
+                      uncertainty = "none", data = d)
+ans$estimand_info
+ans$notes
+```
+
+Written out, that becomes: *the estimand is the ratio of response means,
+standardized over the observed covariate distribution, comparing Bio with
+Control, reported as a point estimate without an uncertainty layer.* A reader
+can reproduce that sentence without seeing the code.
+
+# 10. Limitations
+
+- Equation (2) is model-based. A misspecified conditional distribution biases
+  the standardized estimand even when the sample is large.
+- Positivity is a real constraint. If a covariate cell contains no observations
+  under one treatment level, the balanced and reference populations extrapolate,
+  and the package cannot detect that for you.
+- Under `population = "reference"` with a non-identity link, an `emmeans`
+  contrast lives on the link scale unless `regrid()` is applied. The package
+  applies `regrid(transform = "response")` when it can, and records the result in
+  `notes`.
+
+# References

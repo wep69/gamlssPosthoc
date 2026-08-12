@@ -12,64 +12,26 @@
 #'   `p.value` column is used as supplied.
 #' @param Letters Character vector passed to `multcompView::multcompLetters()`.
 #' @return The estimates data frame with an additional `.group` column.
-#' @details
-#' The letters are derived from the p-values stored in `x`. With bootstrap
-#' uncertainty, the smallest attainable p-value is bounded by the number of
-#' resamples, roughly `2/(B+1)` for a two-sided comparison, so a small `B`
-#' combined with a multiplicity adjustment can leave every level in the same
-#' group even when the estimates are far apart. Either raise `B` or use an
-#' analytic uncertainty layer when a compact letter display is the goal.
+#' @export
 #' @examples
 #' if (requireNamespace("gamlss", quietly = TRUE) &&
 #'     requireNamespace("gamlss.dist", quietly = TRUE) &&
 #'     requireNamespace("emmeans", quietly = TRUE) &&
 #'     requireNamespace("multcompView", quietly = TRUE)) {
-#'   set.seed(3)
-#'   d <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 25)))
-#'   d$y <- gamlss.dist::rGA(nrow(d),
-#'     mu = c(A = 2, B = 3, C = 4.5)[d$trt], sigma = 0.2)
-#'   fit <- gamlss::gamlss(y ~ trt, data = d, family = gamlss.dist::GA,
-#'                         trace = FALSE)
-#'   ph <- gamlss_posthoc(fit, specs = "trt", estimand = "parameter",
-#'                        what = "mu", population = "reference",
-#'                        contrast = "pairwise", data = d)
+#'   set.seed(16)
+#'   d <- data.frame(trt=factor(rep(c("A","B","C"), each=25)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu=c(A=2,B=2.5,C=3.2)[d$trt], sigma=.20)
+#'   fit <- gamlss::gamlss(y~trt, family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   ph <- gamlss_posthoc(fit, "trt", estimand="parameter", what="mu",
+#'                        population="reference", contrast="pairwise",
+#'                        engine="emmeans", uncertainty="delta", data=d)
+#'   # 1. Default 5% CLD
 #'   gamlss_cld(ph)
+#'   # 2. More liberal display threshold
+#'   gamlss_cld(ph, alpha=.10)
+#'   # 3. Holm-adjust raw p-values before constructing letters
+#'   gamlss_cld(ph, p_adjust="holm")
 #' }
-#'
-#' # Normal response.
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
-#'     requireNamespace("emmeans", quietly = TRUE) &&
-#'     requireNamespace("multcompView", quietly = TRUE)) {
-#'   set.seed(41)
-#'   d <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 20)))
-#'   d$y <- gamlss.dist::rNO(nrow(d),
-#'     mu = c(A = 10, B = 13, C = 17)[d$trt], sigma = 1.5)
-#'   fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::NO,
-#'                         data = d, trace = FALSE)
-#'   ph <- gamlss_posthoc(fit, specs = "trt", estimand = "parameter",
-#'                        what = "mu", population = "reference",
-#'                        contrast = "pairwise", data = d)
-#'   gamlss_cld(ph)
-#' }
-#'
-#' # Weibull response, with a stricter significance threshold.
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
-#'     requireNamespace("emmeans", quietly = TRUE) &&
-#'     requireNamespace("multcompView", quietly = TRUE)) {
-#'   set.seed(42)
-#'   d <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 25)))
-#'   d$y <- gamlss.dist::rWEI(nrow(d),
-#'     mu = c(A = 5, B = 7, C = 10)[d$trt], sigma = 3)
-#'   fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::WEI,
-#'                         data = d, trace = FALSE)
-#'   ph <- gamlss_posthoc(fit, specs = "trt", estimand = "parameter",
-#'                        what = "mu", population = "reference",
-#'                        contrast = "pairwise", data = d)
-#'   gamlss_cld(ph, alpha = 0.01)
-#' }
-#' @export
 gamlss_cld <- function(x, alpha = 0.05, p_adjust = NULL,
                        Letters = c(letters, LETTERS, ".")) {
   if (!is.numeric(alpha) || length(alpha) != 1L || !is.finite(alpha) || alpha <= 0 || alpha >= 1) {
@@ -111,8 +73,8 @@ gamlss_cld <- function(x, alpha = 0.05, p_adjust = NULL,
     if (!any(ok)) next
     pv <- p[ok]; names(pv) <- mapped[ok]
     L <- multcompView::multcompLetters(pv, threshold = alpha, Letters = Letters)$Letters
-    reverse <- stats::setNames(names(safe), safe)
-    letters_by_level <- stats::setNames(rep(NA_character_, length(levels_here)), levels_here)
+    reverse <- setNames(names(safe), safe)
+    letters_by_level <- setNames(rep(NA_character_, length(levels_here)), levels_here)
     for (tok in names(L)) letters_by_level[reverse[tok]] <- L[tok]
     est$.group[ei] <- letters_by_level[as.character(est[[s]][ei])]
   }

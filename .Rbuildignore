@@ -1,8 +1,5 @@
 
 ^.*\.Rproj$
-^\.github$
-^\.gitignore$
-^\.gitattributes$
 ^API_CONTRACT_VALIDATION\.md$
 ^CRAN_AUDIT\.md$
 ^IMPLEMENTATION_0\.2\.0\.md$
@@ -21,4 +18,27 @@
 ^demo_all_examples\.R$
 ^gamlss_posthoc_standalone\.R$
 ^inst/html$
-^tools$
+^GLOSSARY\.md$
+^IMPLEMENTATION_0\.3\.0\.md$
+^TEST_MATRIX_0\.3\.0\.md$
+^REFERENCES_0\.3\.0\.md$
+^VALIDATION_0\.3\.0\.md$
+^tools/static_validate\.py$
+^tools/mathematical_validation\.py$
+^tools/graphics_math_validation\.py$
+^GRAPHICS_MATH_VALIDATION\.json$
+^GRAPHICS_MATH_VALIDATION\.md$
+^tools/build_interactive_readme\.py$
+^tools/cran_preflight\.R$
+^tools/install_dependencies\.R$
+^tools/run_validation\.R$
+^tools/run_vdiffr\.R$
+
+^PACKAGE_CONTENTS_0\.3\.0\.md$
+^\.github$
+^\.gitignore$
+^\.gitattributes$
+^REFERENCES_AUDIT\.md$
+^_pkgdown\.yml$
+^pkgdown$
+^tools/benchmark\.R$

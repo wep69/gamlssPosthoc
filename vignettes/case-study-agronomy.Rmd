@@ -1,0 +1,319 @@
+---
+title: "A Complete Agronomic Case Study from Design to Results Paragraph"
+author: "Walter Esfrain Pereira"
+output: rmarkdown::html_vignette
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{A Complete Agronomic Case Study from Design to Results Paragraph}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.2, fig.height = 3.8)
+library(gamlssPosthoc)
+has_core <- requireNamespace("gamlss", quietly = TRUE) &&
+  requireNamespace("gamlss.dist", quietly = TRUE)
+has_dist <- has_core && requireNamespace("distributions3", quietly = TRUE)
+has_gg   <- has_core && requireNamespace("ggplot2", quietly = TRUE)
+has_emm  <- has_core && requireNamespace("emmeans", quietly = TRUE)
+has_mcv  <- has_core && requireNamespace("multcompView", quietly = TRUE)
+if (has_core) suppressPackageStartupMessages(library(gamlss.dist))
+```
+
+# 1. The trial and the question
+
+A randomized complete block experiment evaluates four nitrogen sources on grain
+yield, in five blocks, with three plots per source per block. Yield is a positive
+continuous response, right-skewed, and field experience says the sources differ
+not only in average yield but in **consistency**: one of them is known to perform
+well on good plots and poorly on marginal ones.
+
+Two questions follow, and they need two different estimands.
+
+1. Does mean yield differ among sources? The estimand is the standardized
+   response mean, compared pairwise, on the ratio scale because agronomic
+   recommendations are relative.
+2. Does yield *stability* differ? The estimand is the standardized variance, or
+   equivalently the dispersion parameter, compared on the same scale.
+
+A model that estimates only the mean cannot answer the second question. That is
+the reason to fit a GAMLSS rather than a linear model [@rigby2005].
+
+The data below are simulated so the vignette is self-contained and reproducible.
+The generating process is written out explicitly so the reader can check what the
+analysis recovers.
+
+```{r data, eval=has_core}
+set.seed(7001)
+sources <- c("Urea", "AmmSulf", "CoatedUrea", "Organic")
+d <- expand.grid(
+  rep    = 1:3,
+  nsource = factor(sources, levels = sources),
+  block  = factor(paste0("B", 1:5))
+)
+d$rep <- NULL
+
+# Mean structure: block effect plus source effect, multiplicative
+mu_source <- c(Urea = 0.00, AmmSulf = 0.06, CoatedUrea = 0.18, Organic = -0.05)
+mu_block  <- c(B1 = -0.10, B2 = 0.00, B3 = 0.05, B4 = 0.12, B5 = -0.07)
+eta_mu <- log(4.2) + mu_source[as.character(d$nsource)] +
+                     mu_block[as.character(d$block)]
+
+# Dispersion structure: Organic is markedly less stable
+sg_source <- c(Urea = 0.00, AmmSulf = -0.05, CoatedUrea = -0.12, Organic = 0.45)
+eta_sg <- log(0.16) + sg_source[as.character(d$nsource)]
+
+d$yield <- gamlss.dist::rGA(nrow(d), mu = exp(eta_mu), sigma = exp(eta_sg))
+str(d)
+```
+
+One naming detail is worth flagging, because it costs hours when it bites. The
+factor is called `nsource` and not `source`. Internally `predict.gamlss()` binds
+the original data and the prediction data into one frame and marks the origin of
+each row with a column literally named `source`. A covariate of that name is
+silently overwritten, and prediction then fails with an opaque
+`lm.wfit ... 0 non-NA cases` error. The same applies to any other name the
+internal helper uses. When a model refuses to predict for no visible reason,
+renaming the covariate is the first thing to try.
+
+# 2. Choosing the family by diagnosis, not by habit
+
+The default reflex is Gaussian. For a positive, right-skewed response with
+multiplicative block effects that is rarely the right choice. Compare candidates
+on out-of-sample behaviour and on residual diagnostics, not on convenience.
+
+```{r family, eval=has_core}
+f_no <- gamlss::gamlss(yield ~ nsource + block, family = gamlss.dist::NO,
+                       data = d, trace = FALSE)
+f_ga <- gamlss::gamlss(yield ~ nsource + block, sigma.formula = ~ nsource,
+                       family = gamlss.dist::GA, data = d, trace = FALSE)
+f_ln <- gamlss::gamlss(yield ~ nsource + block, sigma.formula = ~ nsource,
+                       family = gamlss.dist::LOGNO, data = d, trace = FALSE)
+gamlss_poly_compare(Normal = f_no, Gamma = f_ga, Lognormal = f_ln)
+```
+
+Randomized quantile residuals [@dunn1996] are the right diagnostic here, because
+they are exactly standard normal under a correctly specified model regardless of
+the family, which ordinary Pearson residuals are not.
+
+```{r diagnostics, eval=has_gg}
+plot_gamlss_diagnostics(f_ga, "qq", data = d)
+plot_gamlss_diagnostics(f_ga, "pit", bins = 10L, data = d)
+```
+
+A well-calibrated model gives a straight quantile-quantile plot and a flat
+histogram of the probability integral transform. A U-shaped PIT histogram means
+the predictive distribution is too narrow, and a hump-shaped one means it is too
+wide. Neither is visible in the mean structure alone.
+
+```{r fit, eval=has_core}
+fit <- f_ga
+fit
+```
+
+# 3. Declare the plan before computing any contrast
+
+`gamlss_posthoc_plan()` is not decoration. It reports which engine is eligible,
+which parameters were discovered, and which uncertainty layer is defensible for
+the requested target. Running it first prevents the most common failure, which is
+requesting a delta interval for a quantity that does not have one.
+
+```{r plan, eval=has_core}
+gamlss_posthoc_plan(fit, estimand = "mean", contrast = "pairwise",
+                    comparison = "ratio")
+```
+
+# 4. Question one, mean yield
+
+The estimand is fixed by four choices: the response mean, standardized over the
+observed covariate distribution, compared pairwise, on the ratio scale. The
+uncertainty layer is a refit bootstrap, because a marginal mean derived from the
+full predictive distribution has no reliable joint covariance in current
+`gamlss`.
+
+```{r mean-contrasts, eval=has_dist}
+ph_mean <- gamlss_posthoc(
+  fit, "nsource", estimand = "mean",
+  contrast = "pairwise", comparison = "ratio",
+  population = "observed",
+  uncertainty = "bootstrap", B = 99L, seed = 7002,
+  data = d
+)
+ph_mean$estimand_info
+est <- ph_mean$estimates[, intersect(c("nsource", "estimate", "SE",
+                                       "lower.CL", "upper.CL"),
+                                     names(ph_mean$estimates))]
+num <- vapply(est, is.numeric, logical(1))
+est[num] <- lapply(est[num], round, 4)
+est
+```
+
+```{r mean-table, eval=has_dist}
+cols <- intersect(c("comparison", "estimate", "lower.CL", "upper.CL", "p.value"),
+                  names(ph_mean$contrasts))
+round_df <- ph_mean$contrasts[, cols]
+num <- vapply(round_df, is.numeric, logical(1))
+round_df[num] <- lapply(round_df[num], round, 4)
+round_df
+```
+
+```{r mean-plot, eval=has_gg && has_dist}
+plot_gamlss_contrasts(ph_mean, null = 1) +
+  ggplot2::labs(x = "Yield ratio versus the comparator",
+                title = "Pairwise ratios of standardized mean yield")
+```
+
+# 5. Question two, stability
+
+The same object-oriented workflow answers the dispersion question. Nothing
+changes except the estimand.
+
+```{r variance, eval=has_dist}
+ph_var <- gamlss_posthoc(
+  fit, "nsource", estimand = "variance",
+  contrast = "reference", comparison = "ratio",
+  uncertainty = "bootstrap", B = 99L, seed = 7003,
+  data = d
+)
+cols <- intersect(c("comparison", "estimate", "lower.CL", "upper.CL"),
+                  names(ph_var$contrasts))
+z <- ph_var$contrasts[, cols]
+num <- vapply(z, is.numeric, logical(1)); z[num] <- lapply(z[num], round, 4)
+z
+```
+
+```{r params-plot, eval=has_gg && has_dist}
+plot_gamlss_parameters(fit, "nsource", parameters = c("mu", "sigma"), data = d)
+```
+
+The two panels carry the whole scientific message: the coated source raises the
+mean, and the organic source raises the dispersion. A mean-only analysis would
+have reported the first and hidden the second.
+
+# 6. Compact letter displays, and their limits
+
+Letters are requested constantly by agronomic journals, so the package provides
+them through the algorithm of Piepho [@piepho2004]. They require p-values, so the
+object must carry an uncertainty layer.
+
+```{r cld, eval=has_mcv && has_emm}
+ph_letters <- gamlss_posthoc(
+  fit, "nsource", estimand = "parameter", what = "mu",
+  population = "reference", contrast = "pairwise",
+  engine = "emmeans", uncertainty = "delta", data = d
+)
+gamlss_cld(ph_letters)
+```
+
+The `alpha` argument controls only the display threshold, not the inference. A
+regression context where evidence up to `p = 0.10` is treated as meaningful is
+declared by setting it explicitly:
+
+```{r cld-10, eval=has_mcv && has_emm}
+gamlss_cld(ph_letters, alpha = 0.10)
+```
+
+## 6.1 Why letters should be used with care
+
+Three criticisms are well founded and should be acknowledged in any manuscript
+that prints letters.
+
+1. **Sharing a letter is not evidence of equality.** Two means share a letter
+   whenever the test failed to reject, which happens both when they are genuinely
+   close and when the experiment lacked power. The display cannot distinguish
+   those two situations, and readers routinely misread it as proof of no
+   difference.
+2. **The display is threshold-dependent and unstable.** Moving `alpha` from 0.05
+   to 0.10 can change the entire pattern, as the two blocks above show, even
+   though no estimate moved at all.
+3. **Effect size and uncertainty disappear.** A letter carries no information
+   about how large a difference is or how precisely it was measured, which is
+   exactly the information a reader needs to judge agronomic relevance.
+
+The recommendation implemented throughout this package is therefore to report the
+estimate with its interval as the primary result, and to treat letters as an
+optional reading aid printed alongside, never as a replacement. The contrast plot
+in section 4 conveys size, direction and precision at once; the letters do not.
+
+# 7. Figures for submission
+
+```{r figures, eval=has_gg && has_dist}
+p1 <- plot_gamlss_estimand(fit, "nsource", estimand = "mean", data = d) +
+  ggplot2::labs(y = "Standardized mean yield (t/ha)", x = "Nitrogen source") +
+  theme_gamlss_journal()
+p1
+```
+
+```{r figures2, eval=has_gg && has_dist}
+plot_gamlss_distribution(fit, "nsource", type = "density", data = d,
+                         n_response = 60L) +
+  ggplot2::labs(x = "Yield (t/ha)", y = "Predictive density",
+                title = "Standardized predictive distributions") +
+  theme_gamlss_journal()
+```
+
+The predictive densities make the stability result visible without any test: the
+organic source has a visibly wider distribution at a similar location.
+
+# 8. A written Results paragraph
+
+The point of recording the estimand is that the paragraph can be written from the
+object, not from memory. Everything in italics below is read directly from
+`estimand_info` and from the contrast table.
+
+> Grain yield was modelled with a Gamma GAMLSS with nitrogen source and block in
+> the location submodel and nitrogen source in the dispersion submodel
+> (log links for both). Model adequacy was assessed with randomized quantile
+> residuals. The reported estimand is the *ratio of response means, standardized
+> over the observed covariate distribution*, with *pairwise* comparisons among
+> sources and *99 case-refit bootstrap* replicates for interval estimation.
+> Coated urea increased mean yield relative to urea (ratio and 95 percent
+> interval reported in Table 1), while the organic source did not differ from
+> urea in the mean. Yield dispersion differed: the standardized variance under
+> the organic source was substantially higher than under urea (Table 2),
+> indicating lower stability at comparable mean performance. Evidence up to
+> `p = 0.10` was treated as meaningful, and compact letters are shown in Figure 1
+> as a reading aid only; the primary inference is based on the reported effect
+> sizes and intervals.
+
+Three properties of that paragraph are worth naming. It states the estimand
+before the result. It separates the mean conclusion from the dispersion
+conclusion. And it says what the letters are for, which prevents the reader from
+over-reading them.
+
+# 9. Export
+
+```{r export, eval=has_core}
+tex <- export_to_latex(ph_mean, component = "contrasts",
+                       caption = "Pairwise ratios of standardized mean yield")
+cat(substr(tex, 1, 200))
+```
+
+```{r report, eval=has_dist}
+md <- generate_report(ph_mean, output = "md",
+                      title = "Nitrogen source trial", include_plots = FALSE)
+cat(substr(md, 1, 200))
+```
+
+# 10. Reproducibility checklist
+
+Before submission, confirm every line below.
+
+| Item | Where it lives |
+|---|---|
+| Family chosen by diagnosis, with the comparison recorded | `gamlss_poly_compare()` output |
+| Residual diagnostics inspected | `plot_gamlss_diagnostics()` |
+| Engine and uncertainty route decided in advance | `gamlss_posthoc_plan()` |
+| Estimand, population, geometry and scale stated | `ans$estimand_info` |
+| Bootstrap seed fixed | `seed` argument |
+| Uncertainty layer named in the text | `ans$notes` |
+| Letters, if printed, described as a reading aid | manuscript text |
+| Session information archived | `sessionInfo()` |
+
+```{r session, eval=TRUE}
+utils::sessionInfo()$R.version$version.string
+```
+
+# References

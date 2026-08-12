@@ -42,61 +42,27 @@
 #' @param seed Random seed.
 #' @return Object of class `gamlss_trend` with curve/derivative values and,
 #'   where requested, detected turning points or extrema.
+#' @export
 #' @examples
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
-#'   set.seed(5)
-#'   d <- data.frame(dose = rep(c(0, 2, 4, 6, 8), each = 10))
-#'   d$y <- gamlss.dist::rGA(nrow(d),
-#'     mu = 2 + 0.6 * d$dose - 0.05 * d$dose^2, sigma = 0.2)
-#'   fit <- gamlss::gamlss(y ~ dose + I(dose^2), data = d,
-#'                         family = gamlss.dist::GA, trace = FALSE)
-#'
-#'   # Fitted response curve over the dose range
-#'   tr <- gamlss_trend(fit, x = "dose", method = "curve", n = 25L,
-#'                      uncertainty = "none", data = d)
-#'   head(tr$values)
-#'
-#'   # Locally refined interior maximum
-#'   gamlss_trend(fit, x = "dose", method = "optimum", optimum = "maximum",
-#'                n = 25L, uncertainty = "none", data = d)
-#' }
-#'
-#' # Normal response: first derivative of the fitted curve, that is, the
-#' # marginal effect of dose on the response scale.
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
-#'   set.seed(81)
-#'   d <- data.frame(dose = rep(seq(0, 12, by = 2), each = 10))
-#'   d$y <- gamlss.dist::rNO(nrow(d),
-#'     mu = 4 + 1.5 * d$dose - 0.1 * d$dose^2, sigma = 1)
-#'   fit <- gamlss::gamlss(y ~ dose + I(dose^2), family = gamlss.dist::NO,
-#'                         data = d, trace = FALSE)
-#'   tr <- gamlss_trend(fit, x = "dose", method = "derivative",
-#'                      derivative_order = 1, n = 20L,
-#'                      uncertainty = "none", data = d)
-#'   head(tr$values)
-#' }
-#'
-#' # Lognormal response fitted with a `pb()` smoother: emmeans is not usable
-#' # here, so the curve comes from the distribution engine.
 #' if (requireNamespace("gamlss", quietly = TRUE) &&
 #'     requireNamespace("gamlss.dist", quietly = TRUE) &&
 #'     requireNamespace("distributions3", quietly = TRUE)) {
-#'   set.seed(82)
-#'   d <- data.frame(dose = runif(70, 0, 12))
-#'   d$y <- gamlss.dist::rLOGNO(nrow(d),
-#'     mu = 0.5 + 0.15 * d$dose - 0.008 * d$dose^2, sigma = 0.3)
-#'   # `gamlss::pb()` is qualified because examples run with only this
-#'   # package attached.
-#'   fit <- gamlss::gamlss(y ~ gamlss::pb(dose), family = gamlss.dist::LOGNO,
+#'   set.seed(14)
+#'   d <- data.frame(dose = rep(seq(0, 120, length.out = 10), each = 8))
+#'   mu <- exp(.4 + .015*d$dose - .00007*d$dose^2)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = .22)
+#'   fit <- gamlss::gamlss(y ~ dose + I(dose^2), family = gamlss.dist::GA,
 #'                         data = d, trace = FALSE)
-#'   tr <- gamlss_trend(fit, x = "dose", method = "curve", n = 20L,
-#'                      engine = "distribution", uncertainty = "none",
-#'                      data = d)
-#'   head(tr$values)
+#'   # 1. Predicted response-mean curve
+#'   gamlss_trend(fit, "dose", method = "curve", n = 25,
+#'                uncertainty = "none", data = d)
+#'   # 2. First derivative of the mean curve
+#'   gamlss_trend(fit, "dose", method = "derivative", derivative_order = 1,
+#'                n = 25, uncertainty = "none", data = d)
+#'   # 3. Refined maximum on the supplied dose range
+#'   gamlss_trend(fit, "dose", method = "optimum", optimum = "maximum",
+#'                n = 25, uncertainty = "none", data = d)
 #' }
-#' @export
 gamlss_trend <- function(object, x, by = NULL, at_x = NULL, n = 100L,
                          method = c("curve", "derivative", "turning_points", "optimum"),
                          derivative_order = 1L,
@@ -232,6 +198,11 @@ gamlss_trend <- function(object, x, by = NULL, at_x = NULL, n = 100L,
       op$x_lower[j] <- stats::quantile(z, 0.025, na.rm = TRUE)
       op$x_upper[j] <- stats::quantile(z, 0.975, na.rm = TRUE)
     }
+    names(draws_op) <- if (length(by)) vapply(seq_len(nrow(op)), function(j) {
+      vals <- vapply(by, function(b) as.character(op[[b]][j]), character(1))
+      paste(paste(by, vals, sep = "="), collapse = ", ")
+    }, character(1)) else "All"
+    attr(op, "optimum_draws") <- draws_op
   }
   .gph_trend_object(d, method, x, by, estimand, ph, special = op)
 }
@@ -337,9 +308,7 @@ gamlss_trend <- function(object, x, by = NULL, at_x = NULL, n = 100L,
   if (length(y) < 3L || j == 1L || j == length(y)) return(ans)
   ii <- (j - 1L):(j + 1L)
   X <- cbind(1, x[ii], x[ii]^2)
-  ## `lm.fit()` labels its coefficients (x1, x2, x3); those names must not
-  ## propagate into the returned optimum coordinates.
-  cf <- try(unname(stats::lm.fit(X, y[ii])$coefficients), silent = TRUE)
+  cf <- try(stats::lm.fit(X, y[ii])$coefficients, silent = TRUE)
   if (inherits(cf, "try-error") || length(cf) < 3L || any(!is.finite(cf)) || abs(cf[3]) < sqrt(.Machine$double.eps)) return(ans)
   curvature_ok <- if (optimum == "maximum") cf[3] < 0 else cf[3] > 0
   if (!curvature_ok) return(ans)
@@ -347,7 +316,7 @@ gamlss_trend <- function(object, x, by = NULL, at_x = NULL, n = 100L,
   if (!is.finite(xv) || xv < min(x[ii]) || xv > max(x[ii])) return(ans)
   yv <- cf[1] + cf[2] * xv + cf[3] * xv^2
   if (!is.finite(yv)) return(ans)
-  list(x = xv, y = yv, refined = TRUE)
+  list(x = unname(xv), y = unname(yv), refined = TRUE)
 }
 
 .gph_optima <- function(d, x, by, optimum) {
@@ -380,20 +349,6 @@ print.gamlss_trend <- function(x, ...) {
   if (!is.null(x$special_points)) {
     cat("\nSpecial points\n")
     print(x$special_points, row.names = FALSE)
-  }
-  invisible(x)
-}
-
-#' @method plot gamlss_trend
-#' @export
-#' @noRd
-plot.gamlss_trend <- function(x, ...) {
-  d <- x$values
-  ycol <- if (grepl("derivative", x$method)) x$method else "estimate"
-  if (!ycol %in% names(d)) ycol <- "estimate"
-  graphics::plot(d[[x$x]], d[[ycol]], type = "l", xlab = x$x, ylab = ycol, ...)
-  if (!is.null(x$special_points) && nrow(x$special_points)) {
-    graphics::points(x$special_points[[x$x]], x$special_points$estimate, pch = 19)
   }
   invisible(x)
 }

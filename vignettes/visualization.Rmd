@@ -1,0 +1,455 @@
+---
+title: "A Data-First Graphics Layer for GAMLSS"
+author: "Walter Esfrain Pereira"
+output: rmarkdown::html_vignette
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{A Data-First Graphics Layer for GAMLSS}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.2, fig.height = 3.8)
+library(gamlssPosthoc)
+has_core <- requireNamespace("gamlss", quietly = TRUE) &&
+  requireNamespace("gamlss.dist", quietly = TRUE)
+has_dist <- has_core && requireNamespace("distributions3", quietly = TRUE)
+has_gg   <- has_core && requireNamespace("ggplot2", quietly = TRUE)
+has_zadj <- has_dist && requireNamespace("gamlss.inf", quietly = TRUE)
+has_broom <- requireNamespace("broom", quietly = TRUE)
+has_flex <- requireNamespace("flextable", quietly = TRUE)
+if (has_core) suppressPackageStartupMessages(library(gamlss.dist))
+```
+
+# 1. Introduction
+
+A GAMLSS models every parameter of a conditional distribution [@rigby2005],
+
+\[
+Y_i \sim \mathcal{D}(\theta_{1i},\ldots,\theta_{pi}),\qquad
+g_k(\theta_{ki}) = \eta_{ki}.
+\]
+
+Location, dispersion and shape can each depend on treatments, covariates and
+smoothers. Version 0.3.0 adds a **data-first** graphics layer:
+
+\[
+\boxed{\text{model} \rightarrow \text{estimand or distribution}
+\rightarrow \text{plot data} \rightarrow \text{ggplot}}
+\]
+
+The purpose is to separate the statistical computation from its visual
+representation. `gamlss_plot_data()` produces the auditable table, and the
+`plot_gamlss_*()` functions build `ggplot2` objects the user can modify. This
+follows the public extension API of `ggplot2`, which recommends that packages
+return `ggplot` objects and use `autoplot()` as the S3 mechanism for automatic
+visualization [@wickham_ggplot2].
+
+The practical consequence is that no figure in this package is a black box. Every
+plot has a table behind it, that table is exported, and it can be checked,
+re-plotted or shipped as supplementary material.
+
+# 2. Why several parameters must be visualized
+
+In a family with parameters \(\mu, \sigma, \nu, \tau\), treatments can act
+differently on each:
+
+\[
+\mu = \mu(x),\quad \sigma = \sigma(x),\quad \nu = \nu(x),\quad \tau = \tau(x).
+\]
+
+A figure of \(\mu\) alone can hide important changes in dispersion or shape. The
+package discovers the parameters present in the object dynamically, so the same
+call works for a two-parameter and a four-parameter family.
+
+# 3. Reproducible example
+
+```{r fit, eval=has_core}
+library(gamlssPosthoc)
+set.seed(1001)
+d <- data.frame(
+  dose = rep(seq(0, 150, length.out = 12), each = 10),
+  trt  = factor(rep(c("Control", "Bio"), length.out = 120))
+)
+mu <- exp(log(2.2) + .012 * d$dose - .00005 * d$dose^2 + .18 * (d$trt == "Bio"))
+sigma <- exp(log(.22) + .002 * d$dose)
+d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sigma)
+fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2), sigma.formula = ~ dose,
+                      family = gamlss.dist::GA, data = d, trace = FALSE)
+```
+
+## 3.1 Parameters
+
+```{r params, eval=has_gg}
+plot_gamlss_parameters(fit, "dose", parameters = c("mu", "sigma"), data = d)
+```
+
+Two selection styles are available, and both are executed below so the reader can
+see the difference rather than read about it.
+
+```{r params-all, eval=has_gg}
+plot_gamlss_parameters(fit, x = "dose", parameters = "all", data = d)
+```
+
+## 3.2 Marginal estimand
+
+The estimand must be declared. For the mean,
+
+\[
+T(F) = E(Y).
+\]
+
+```{r estimand, eval=has_gg && has_dist}
+plot_gamlss_estimand(fit, "dose", estimand = "mean", data = d)
+```
+
+# 4. Predictive distributions
+
+Visualizing the whole distribution exposes differences a mean cannot show. For a
+standardized population,
+
+\[
+f_g(y) = \sum_i w_i\, f(y \mid X_i, g).
+\]
+
+```{r dist, eval=has_gg && has_dist}
+plot_gamlss_distribution(fit, "trt", type = "density", data = d)
+```
+
+The cumulative and survival views use the same plot data.
+
+```{r dist-cdf, eval=has_gg && has_dist}
+plot_gamlss_distribution(fit, "trt", type = "cdf", data = d, n_response = 60L)
+```
+
+```{r dist-surv, eval=has_gg && has_dist}
+plot_gamlss_distribution(fit, "trt", type = "survival", data = d, n_response = 60L)
+```
+
+# 5. Quantile fan, and why it is a mixture quantile
+
+Marginal quantiles come from the standardized mixture distribution, not from
+averaging the conditional quantiles. For \(p \in (0,1)\), the package solves
+
+\[
+\sum_i w_i F_i(q_p) = p
+\tag{1}
+\]
+
+for \(q_p\). The naive alternative, \(\tilde q_p = \sum_i w_i F_i^{-1}(p)\), is a
+different quantity. Because the quantile function is non-linear, Jensen's
+inequality applies again, and the two coincide only when the conditional
+distributions are identical across \(i\). The block below computes both.
+
+```{r mixture-quantile, eval=has_dist}
+pd <- gamlss_plot_data(fit, "quantiles", x = "dose", probs = 0.9,
+                       data = d, n = 5L)
+# Naive average of conditional quantiles at the same dose grid
+grid <- sort(unique(pd$dose))
+naive <- vapply(grid, function(g) {
+  nd <- transform(d, dose = g)
+  mu_i <- stats::predict(fit, what = "mu", newdata = nd, type = "response", data = d)
+  sg_i <- stats::predict(fit, what = "sigma", newdata = nd, type = "response", data = d)
+  if (length(sg_i) == 1L) sg_i <- rep(sg_i, length(mu_i))
+  mean(gamlss.dist::qGA(0.9, mu = mu_i, sigma = sg_i))
+}, numeric(1))
+data.frame(dose = round(grid, 2),
+           mixture_quantile = round(pd$quantile, 4),
+           average_of_quantiles = round(naive, 4),
+           relative_gap = round(pd$quantile / naive - 1, 4))
+```
+
+The gap is small here because the two treatment groups are similar at each dose,
+and it widens as the conditional distributions separate. Equation (1) is the one
+that answers "what value does 90 percent of this population fall below".
+
+```{r fan, eval=has_gg && has_dist}
+plot_gamlss_quantiles(fit, "dose", probs = c(.05, .10, .25, .50, .75, .90, .95),
+                      style = "fan", data = d)
+```
+
+# 6. Zero-adjusted responses
+
+For a semicontinuous response,
+
+\[
+P(Y = 0) = h, \qquad Y \mid Y > 0 \sim F_+ ,
+\]
+
+with marginal mean \(E(Y) = (1-h)E(Y_+)\) and variance
+
+\[
+\operatorname{Var}(Y) = (1-h)\operatorname{Var}(Y_+) + h(1-h)\{E(Y_+)\}^2 .
+\]
+
+`plot_gamlss_zero_adjusted()` shows the zero probability, the positive mean and
+the marginal mean separately, which prevents `mu` from being read as if it
+described the full response.
+
+```{r zadj, eval=has_gg && has_zadj}
+set.seed(1003)
+dz <- data.frame(trt = factor(rep(c("A", "B"), each = 40)))
+h <- ifelse(dz$trt == "A", .40, .18)
+pos <- gamlss.dist::rGA(nrow(dz), mu = ifelse(dz$trt == "A", 2, 3), sigma = .30)
+dz$y <- ifelse(stats::rbinom(nrow(dz), 1, h) == 1, 0, pos)
+zfit <- gamlss.inf::gamlssZadj(y = y, mu.formula = ~ trt, xi0.formula = ~ trt,
+                               family = gamlss.dist::GA, data = dz, trace = FALSE)
+plot_gamlss_zero_adjusted(zfit, "trt", data = dz)
+```
+
+# 7. Scientific contrasts
+
+The package separates *who* is compared from *how* the effect is expressed. For
+groups A and B,
+
+\[
+\Delta = A - B, \qquad R = A/B, \qquad PC = 100(R - 1).
+\]
+
+```{r contrast, eval=has_gg && has_dist}
+ph <- gamlss_posthoc(fit, specs = "trt", estimand = "mean", contrast = "pairwise",
+                     comparison = "percent_change", population = "observed",
+                     uncertainty = "none", data = d)
+plot_gamlss_contrasts(ph)
+```
+
+With retained bootstrap draws and `ggdist` installed, `style = "distribution"`
+renders the uncertainty distributionally rather than as an interval; `ggdist` is
+an extension of the grammar of graphics built specifically for distributions and
+uncertainty [@kay2023].
+
+# 8. Trends, derivatives and optima
+
+For \(m(x) = E(Y \mid x)\), the first derivative
+
+\[
+m'(x) = \frac{d\,m(x)}{dx}
+\]
+
+indicates local growth or decline, and the second describes curvature.
+
+```{r trend, eval=has_gg && has_dist}
+plot_gamlss_trend(fit, "dose", data = d)
+```
+
+```{r deriv, eval=has_gg && has_dist}
+plot_gamlss_derivative(fit, "dose", order = 1, data = d)
+```
+
+```{r optimum, eval=has_gg && has_dist}
+plot_gamlss_optimum(fit, "dose", optimum = "maximum", data = d)
+```
+
+A mathematical maximum should not be relabelled automatically as an economic or
+recommended dose. That interpretation depends on costs, risks and other outcomes
+the model does not contain.
+
+# 9. Surfaces
+
+When two quantitative predictors act on the estimand,
+
+\[
+T(F) = T(F \mid x_1, x_2),
+\]
+
+a surface can reveal response regions that one-dimensional slices hide.
+
+```{r surface, eval=has_gg && has_dist}
+set.seed(1004)
+ds <- data.frame(dose = runif(90, 0, 150), salinity = runif(90, 0, 8))
+ds$y <- gamlss.dist::rGA(nrow(ds),
+  mu = exp(0.8 + 0.006 * ds$dose - 0.06 * ds$salinity), sigma = 0.30)
+fit2 <- gamlss::gamlss(y ~ dose + salinity, sigma.formula = ~ salinity,
+                       family = gamlss.dist::GA, data = ds, trace = FALSE)
+plot_gamlss_surface(fit2, "dose", "salinity", estimand = "mean", data = ds, n = 14L)
+```
+
+```{r surface-var, eval=has_gg && has_dist}
+plot_gamlss_surface(fit2, "dose", "salinity", estimand = "parameter",
+                    what = "sigma", type = "contour", data = ds, n = 14L)
+```
+
+# 10. Observations against the predicted distribution
+
+`plot_gamlss_fit()` overlays the observed data, the predicted median and a
+quantile band. For continuous responses this is normally more informative than a
+bar chart of means, which discards the entire distribution.
+
+```{r fitplot, eval=has_gg && has_dist}
+plot_gamlss_fit(fit, "dose", response = "y", probs = c(.05, .5, .95), data = d)
+```
+
+# 11. Diagnostics
+
+GAMLSS relies on randomized quantile residuals [@dunn1996]. Under a correctly
+specified model these are exactly standard normal, whatever the family, which is
+what makes them comparable across candidate distributions.
+
+```{r diag-qq, eval=has_gg}
+plot_gamlss_diagnostics(fit, "qq", data = d)
+```
+
+```{r diag-worm, eval=has_gg}
+plot_gamlss_diagnostics(fit, "worm", data = d)
+```
+
+```{r diag-pit, eval=has_gg}
+plot_gamlss_diagnostics(fit, "pit", data = d)
+```
+
+The worm-style plot implemented here is a detrended quantile-quantile
+representation in `ggplot2`; the native GAMLSS diagnostics remain complementary.
+The former `gamlss.ggplots` package documented a wide collection of GAMLSS plots
+in `ggplot2` but was archived on CRAN in November 2025. `gamlssPosthoc`
+therefore does not depend on it, and implements its diagnostics with public
+`ggplot2` APIs only.
+
+# 12. Model comparison
+
+```{r compare, eval=has_gg}
+fit_ga <- gamlss::gamlss(y ~ trt + dose, family = gamlss.dist::GA,
+                         data = d, trace = FALSE)
+fit_no <- gamlss::gamlss(y ~ trt + dose, family = gamlss.dist::NO,
+                         data = d, trace = FALSE)
+plot_gamlss_compare(GA = fit_ga, NO = fit_no, type = "criteria")
+```
+
+```{r compare-estimand, eval=has_gg && has_dist}
+plot_gamlss_compare(GA = fit_ga, NO = fit_no, type = "estimand", x = "dose",
+                    data = d)
+```
+
+AIC and GAIC must be read together with diagnostics and scientific plausibility.
+A figure does not replace family selection or external validation; see
+`vignette("advanced-workflows")` for proper scoring rules.
+
+# 13. The separate data layer
+
+Any figure can be rebuilt by the user from its table.
+
+```{r datafirst, eval=has_dist}
+pd <- gamlss_plot_data(fit, type = "parameters", x = "dose",
+                       parameters = c("mu", "sigma"), data = d)
+head(pd)
+```
+
+```{r datafirst-custom, eval=has_gg && has_dist}
+ggplot2::ggplot(pd, ggplot2::aes(dose, estimate)) +
+  ggplot2::geom_line(linewidth = 0.9) +
+  ggplot2::facet_wrap(~ parameter, scales = "free_y") +
+  ggplot2::labs(x = "Dose", y = "Parameter value",
+                title = "Rebuilt by the user from the exported plot data") +
+  theme_gamlss()
+```
+
+This layer matters for reproducibility, for regression tests, and for journals
+that require the numbers behind every figure.
+
+# 14. `autoplot()`
+
+`ggplot2::autoplot()` is the official S3 mechanism for producing a complete plot
+appropriate to a class. Methods are provided for `gamlss_posthoc`,
+`gamlss_trend`, `gamlss_distribution_summary` and `gamlss_posthoc_plan`.
+
+```{r autoplot, eval=has_gg && has_dist}
+ggplot2::autoplot(ph)
+```
+
+# 15. Interoperability
+
+Predictions, comparisons, slopes and marginal quantities should be described
+explicitly as transformations of the model rather than as properties of it
+[@arelbundock2024]. That philosophy is adopted here, and the result objects
+implement the standard extraction generics.
+
+```{r broom, eval=has_broom && has_dist}
+head(generics::tidy(ph))
+generics::glance(ph)
+head(generics::augment(ph))
+```
+
+# 16. Export and reports
+
+```{r export, eval=has_dist}
+cat(substr(export_to_latex(ph, component = "contrasts"), 1, 160))
+```
+
+```{r flex, eval=has_flex && has_dist}
+as_flextable(ph, component = "contrasts")
+```
+
+```{r report, eval=has_dist}
+cat(substr(generate_report(ph, output = "md", include_plots = FALSE), 1, 160))
+```
+
+# 17. Themes
+
+The themes return ordinary `ggplot2::theme` objects and can be overridden.
+
+```{r themes, eval=has_gg && has_dist}
+p <- plot_gamlss_estimand(fit, "dose", estimand = "mean", data = d)
+p + theme_gamlss()
+```
+
+```{r themes2, eval=has_gg && has_dist}
+p + theme_gamlss_journal()
+```
+
+```{r themes3, eval=has_gg && has_dist}
+p + theme_gamlss_presentation()
+```
+
+# 18. Accessibility and journal requirements
+
+Three practical constraints recur in submission, and all three are handled at the
+`ggplot2` level rather than inside the package, precisely because the returned
+object is an ordinary plot.
+
+**Colour.** Roughly eight percent of men have some form of colour vision
+deficiency, so a figure must not encode its message in hue alone. Use a
+colour-blind-safe palette and add a redundant channel, such as line type.
+
+```{r accessible, eval=has_gg && has_dist}
+plot_gamlss_estimand(fit, "dose", estimand = "mean", by = "trt", data = d) +
+  ggplot2::scale_colour_viridis_d(option = "cividis", end = 0.85) +
+  theme_gamlss_journal()
+```
+
+**Resolution and format.** Most journals require vector formats for line art and
+at least 300 dpi for raster. Both are one call away:
+
+```{r export-figure, eval=FALSE}
+ggplot2::ggsave("figure1.eps", p, width = 88, height = 60, units = "mm")
+ggplot2::ggsave("figure1.tiff", p, width = 88, height = 60, units = "mm",
+                dpi = 600, compression = "lzw")
+```
+
+**Size and type.** `theme_gamlss_journal()` defaults to a small base size suited
+to a single-column figure. Set `base_family` to the journal's required font
+rather than rescaling the exported image, which distorts the type.
+
+# 19. Good practice
+
+1. Declare the estimand before choosing the figure.
+2. Do not treat `mu` automatically as \(E(Y)\).
+3. For zero-adjusted responses, present the zero mass and the positive part when
+   both are scientifically relevant.
+4. Prefer estimates with intervals over isolated group letters.
+5. Use the bootstrap for quantities derived from several parameters when the
+   joint covariance is not available.
+6. Do not extrapolate derivatives or optima beyond the support of the data.
+7. Audit the engine with `gamlss_posthoc_plan()` before inference.
+8. Ship the plot data alongside the figure.
+
+# 20. Verified software documentation
+
+- `ggplot2::autoplot()`: https://ggplot2.tidyverse.org/reference/autoplot.html
+- Using `ggplot2` in packages: https://ggplot2.tidyverse.org/articles/ggplot2-in-packages.html
+- `ggdist`: https://mjskay.github.io/ggdist/
+- `marginaleffects`: https://marginaleffects.com/
+- `gamlss.ggplots` archive record: https://CRAN.R-project.org/package=gamlss.ggplots
+- `vdiffr::expect_doppelganger()`: https://vdiffr.r-lib.org/reference/expect_doppelganger.html
+
+# References

@@ -1,0 +1,497 @@
+---
+title: "A Cookbook. Three Worked Calls for Every Function"
+author: "Walter Esfrain Pereira"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{A Cookbook. Three Worked Calls for Every Function}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6, fig.height = 3.6)
+library(gamlssPosthoc)
+has_core <- requireNamespace("gamlss", quietly = TRUE) &&
+  requireNamespace("gamlss.dist", quietly = TRUE)
+has_gg   <- has_core && requireNamespace("ggplot2", quietly = TRUE)
+has_dist <- has_core && requireNamespace("distributions3", quietly = TRUE)
+has_zadj <- has_dist && requireNamespace("gamlss.inf", quietly = TRUE)
+has_emm  <- has_core && requireNamespace("emmeans", quietly = TRUE)
+has_me   <- has_core && requireNamespace("marginaleffects", quietly = TRUE)
+has_mcv  <- has_core && requireNamespace("multcompView", quietly = TRUE)
+has_broom <- requireNamespace("broom", quietly = TRUE)
+has_param <- requireNamespace("parameters", quietly = TRUE)
+has_flex <- requireNamespace("flextable", quietly = TRUE)
+has_offi <- has_flex && requireNamespace("officer", quietly = TRUE)
+# gamlss.inf resolves functions such as pGA() from the search path.
+if (has_core) suppressPackageStartupMessages(library(gamlss.dist))
+```
+
+This vignette is a cookbook. Every exported function appears with **three
+distinct uses**, chosen to cover real analysis decisions rather than to repeat
+one call with different arguments. The objects fitted in sections 1 and 2 are
+reused throughout.
+
+# 1. Working model
+
+A positive continuous response with a categorical treatment and a quantitative
+dose, where dispersion also depends on dose:
+
+```{r fit, eval=has_core}
+set.seed(1001)
+d <- data.frame(
+  dose = rep(seq(0, 150, length.out = 12), each = 8),
+  trt  = factor(rep(c("Control", "Bio"), length.out = 96))
+)
+mu <- exp(log(2.2) + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.18 * (d$trt == "Bio"))
+sg <- exp(log(0.22) + 0.002 * d$dose)
+d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sg)
+fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2), sigma.formula = ~ dose,
+                      family = gamlss.dist::GA, data = d, trace = FALSE)
+```
+
+A treatment-only model, useful for clean categorical contrasts:
+
+```{r fit-cat, eval=has_core}
+set.seed(1002)
+dc <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 25)))
+dc$y <- gamlss.dist::rGA(nrow(dc), mu = c(A = 2, B = 2.6, C = 3.1)[dc$trt],
+                         sigma = 0.30)
+fitc <- gamlss::gamlss(y ~ trt, sigma.formula = ~ trt,
+                       family = gamlss.dist::GA, data = dc, trace = FALSE)
+```
+
+# 2. Semicontinuous, zero-adjusted model
+
+```{r fit-zadj, eval=has_zadj}
+set.seed(1003)
+dz <- data.frame(trt = factor(rep(c("A", "B"), each = 40)))
+zmu <- ifelse(dz$trt == "A", 2.0, 3.0)
+zh  <- ifelse(dz$trt == "A", 0.40, 0.18)
+zpos <- gamlss.dist::rGA(nrow(dz), mu = zmu, sigma = 0.30)
+dz$y <- ifelse(stats::rbinom(nrow(dz), 1, zh) == 1, 0, zpos)
+zfit <- gamlss.inf::gamlssZadj(y = y, mu.formula = ~ trt, xi0.formula = ~ trt,
+                               family = gamlss.dist::GA, data = dz, trace = FALSE)
+```
+
+# 3. Capability diagnosis
+
+## 3.1 `gamlss_posthoc_plan()`
+
+```{r plan, eval=has_core}
+# 1. What is possible for the marginal mean
+gamlss_posthoc_plan(fit, estimand = "mean", contrast = "pairwise")
+# 2. The same question for the dispersion parameter
+gamlss_posthoc_plan(fit, estimand = "parameter", what = "sigma")
+# 3. Ratios of means in a balanced target population
+gamlss_posthoc_plan(fit, estimand = "mean", contrast = "pairwise",
+                    comparison = "ratio", population = "balanced")
+```
+
+## 3.2 `gamlss_engine_info()`
+
+```{r engine-info, eval=has_core}
+# 1. Observed population
+gamlss_engine_info(fit, estimand = "parameter", what = "mu")
+# 2. Reference population, where emmeans becomes eligible
+gamlss_engine_info(fit, estimand = "parameter", what = "mu",
+                   population = "reference")
+# 3. An estimand derived from the whole distribution
+gamlss_engine_info(fit, estimand = "variance")
+```
+
+# 4. Post-hoc inference
+
+## 4.1 `gamlss_posthoc()`
+
+```{r posthoc, eval=has_core}
+# 1. Differences between standardized response means
+ph <- gamlss_posthoc(fitc, "trt", estimand = "mean", contrast = "pairwise",
+                     uncertainty = "none", data = dc)
+head(ph$contrasts)
+# 2. Ratios relative to the first level
+gamlss_posthoc(fitc, "trt", estimand = "mean", contrast = "reference",
+               comparison = "ratio", uncertainty = "none", data = dc)$contrasts
+# 3. The dispersion parameter on a reference grid, through emmeans
+if (has_emm) {
+  gamlss_posthoc(fitc, "trt", estimand = "parameter", what = "sigma",
+                 population = "reference", contrast = "none",
+                 uncertainty = "none", data = dc)$estimates
+}
+```
+
+## 4.2 `gamlss_cld()`
+
+Letters require p-values, so the object must carry an uncertainty layer. The
+emmeans route on a reference population supplies delta-method inference.
+
+```{r cld, eval=has_mcv && has_emm}
+phd <- gamlss_posthoc(fitc, "trt", estimand = "parameter", what = "mu",
+                      population = "reference", contrast = "pairwise",
+                      engine = "emmeans", uncertainty = "delta", data = dc)
+# 1. Letters at the conventional five percent threshold
+gamlss_cld(phd)
+# 2. A more liberal display, consistent with evidence up to p = 0.10
+gamlss_cld(phd, alpha = 0.10)
+# 3. Re-adjusted p-values and a different alphabet
+gamlss_cld(phd, p_adjust = "holm", Letters = LETTERS)
+```
+
+## 4.3 `gamlss_trend()`
+
+```{r trend, eval=has_dist}
+# 1. The mean curve along dose
+tr <- gamlss_trend(fit, x = "dose", n = 15L, estimand = "mean",
+                   uncertainty = "none", data = d)
+head(tr$values)
+# 2. First derivative, that is, the response rate
+gamlss_trend(fit, x = "dose", n = 15L, method = "derivative",
+             estimand = "mean", uncertainty = "none", data = d)$values[1:3, ]
+# 3. The dose of maximum response
+gamlss_trend(fit, x = "dose", n = 25L, method = "optimum", optimum = "maximum",
+             estimand = "mean", uncertainty = "none", data = d)$special_points
+```
+
+## 4.4 `gamlss_distribution_summary()`
+
+```{r dist-summary, eval=has_dist}
+nd <- data.frame(trt = factor(c("Control", "Bio"), levels = levels(d$trt)),
+                 dose = c(60, 60))
+# 1. Default summary
+gamlss_distribution_summary(fit, nd, data = d)
+# 2. Quartiles instead of the central 95 percent interval
+gamlss_distribution_summary(fit, nd, probs = c(0.25, 0.50, 0.75), data = d)
+# 3. A zero-adjusted model, with the exact mass at zero
+if (has_zadj) {
+  ndz <- data.frame(trt = factor(c("A", "B"), levels = levels(dz$trt)))
+  gamlss_distribution_summary(zfit, ndz, data = dz)
+}
+```
+
+## 4.5 `gamlss_poly_compare()`
+
+```{r poly, eval=has_core}
+m1 <- gamlss::gamlss(y ~ dose, family = gamlss.dist::GA, data = d, trace = FALSE)
+m2 <- gamlss::gamlss(y ~ dose + I(dose^2), family = gamlss.dist::GA,
+                     data = d, trace = FALSE)
+m3 <- gamlss::gamlss(y ~ dose + I(dose^2) + I(dose^3), family = gamlss.dist::GA,
+                     data = d, trace = FALSE)
+# 1. Classical AIC comparison
+gamlss_poly_compare(linear = m1, quadratic = m2, cubic = m3)
+# 2. A BIC-type penalty
+gamlss_poly_compare(linear = m1, quadratic = m2, cubic = m3, k = log(nrow(d)))
+# 3. Only the two plausible candidates
+gamlss_poly_compare(quadratic = m2, cubic = m3)
+```
+
+# 5. The plot data layer
+
+## 5.1 `gamlss_plot_data()`
+
+```{r plot-data, eval=has_dist}
+# 1. Distributional parameters along dose
+head(gamlss_plot_data(fit, "parameters", x = "dose",
+                      parameters = c("mu", "sigma"), data = d, n = 8L))
+# 2. Predictive density by treatment
+head(gamlss_plot_data(fit, "distribution", x = "trt", curve = "density",
+                      data = d, n_response = 30L))
+# 3. Marginal quantiles
+head(gamlss_plot_data(fit, "quantiles", x = "dose", probs = c(.1, .5, .9),
+                      data = d, n = 8L))
+```
+
+# 6. Graphics
+
+## 6.1 `plot_gamlss_parameters()`
+
+```{r p-params, eval=has_gg}
+# 1. Mean and dispersion together
+plot_gamlss_parameters(fit, "dose", parameters = c("mu", "sigma"), data = d, n = 20L)
+# 2. The mean only, on the linear-predictor scale
+plot_gamlss_parameters(fit, "dose", parameters = "mu", scale = "link",
+                       data = d, n = 20L)
+# 3. Split by treatment
+plot_gamlss_parameters(fit, "dose", parameters = "mu", by = "trt",
+                       data = d, n = 20L)
+```
+
+## 6.2 `plot_gamlss_estimand()`
+
+```{r p-estimand, eval=has_gg && has_dist}
+# 1. Marginal mean
+plot_gamlss_estimand(fit, "dose", estimand = "mean", data = d, n = 20L)
+# 2. Marginal variance
+plot_gamlss_estimand(fit, "dose", estimand = "variance", data = d, n = 20L)
+# 3. Predictive median, by treatment
+plot_gamlss_estimand(fit, "dose", estimand = "quantile", by = "trt",
+                     data = d, n = 20L, prob = 0.5)
+```
+
+## 6.3 `plot_gamlss_contrasts()`
+
+```{r p-contrasts, eval=has_gg}
+# 1. Intervals for the differences
+plot_gamlss_contrasts(ph)
+# 2. With an explicit null line
+plot_gamlss_contrasts(ph, null = 0)
+# 3. Showing the p-values
+plot_gamlss_contrasts(ph, null = 0, show_p = TRUE)
+```
+
+## 6.4 `plot_gamlss_distribution()`
+
+```{r p-dist, eval=has_gg && has_dist}
+# 1. Predictive densities by treatment
+plot_gamlss_distribution(fit, "trt", type = "density", data = d, n_response = 40L)
+# 2. Cumulative distribution function
+plot_gamlss_distribution(fit, "trt", type = "cdf", data = d, n_response = 40L)
+# 3. Survival at fixed doses
+plot_gamlss_distribution(fit, "dose", type = "survival",
+                         at = list(dose = c(0, 75, 150)), data = d,
+                         n_response = 40L)
+```
+
+## 6.5 `plot_gamlss_quantiles()`
+
+```{r p-quant, eval=has_gg && has_dist}
+# 1. Quantile fan
+plot_gamlss_quantiles(fit, "dose", probs = c(.1, .25, .5, .75, .9),
+                      data = d, n = 15L)
+# 2. Lines instead of bands
+plot_gamlss_quantiles(fit, "dose", probs = c(.1, .5, .9), style = "lines",
+                      data = d, n = 15L)
+# 3. Split by treatment
+plot_gamlss_quantiles(fit, "dose", probs = c(.1, .5, .9), by = "trt",
+                      style = "lines", data = d, n = 15L)
+```
+
+## 6.6 `plot_gamlss_trend()`
+
+```{r p-trend, eval=has_gg && has_dist}
+# 1. Straight from the model
+plot_gamlss_trend(fit, "dose", data = d, n = 20L)
+# 2. From a `gamlss_trend` object already computed
+plot_gamlss_trend(tr)
+# 3. By treatment
+plot_gamlss_trend(fit, "dose", by = "trt", data = d, n = 20L)
+```
+
+## 6.7 `plot_gamlss_derivative()`
+
+```{r p-deriv, eval=has_gg && has_dist}
+# 1. First derivative
+plot_gamlss_derivative(fit, "dose", order = 1L, data = d, n = 20L)
+# 2. Second derivative, that is, the curvature
+plot_gamlss_derivative(fit, "dose", order = 2L, data = d, n = 20L)
+# 3. First derivative by treatment
+plot_gamlss_derivative(fit, "dose", order = 1L, by = "trt", data = d, n = 20L)
+```
+
+## 6.8 `plot_gamlss_optimum()`
+
+```{r p-optim, eval=has_gg && has_dist}
+# 1. Point of maximum
+plot_gamlss_optimum(fit, "dose", optimum = "maximum", data = d, n = 25L)
+# 2. Without the background curve
+plot_gamlss_optimum(fit, "dose", optimum = "maximum", show_distribution = FALSE,
+                    data = d, n = 25L)
+# 3. Point of minimum dispersion
+plot_gamlss_optimum(fit, "dose", optimum = "minimum", data = d, n = 25L)
+```
+
+## 6.9 `plot_gamlss_surface()`
+
+```{r p-surface, eval=has_gg && has_dist}
+set.seed(1004)
+ds <- data.frame(x1 = runif(80, 0, 100), x2 = runif(80, 0, 50))
+ds$y <- gamlss.dist::rGA(nrow(ds),
+                         mu = exp(0.6 + 0.006 * ds$x1 + 0.010 * ds$x2),
+                         sigma = 0.3)
+fs <- gamlss::gamlss(y ~ x1 + x2, family = gamlss.dist::GA, data = ds,
+                     trace = FALSE)
+# 1. Heat map
+plot_gamlss_surface(fs, "x1", "x2", data = ds, n = 12L)
+# 2. Contour lines
+plot_gamlss_surface(fs, "x1", "x2", type = "contour", data = ds, n = 12L)
+# 3. Dispersion surface
+plot_gamlss_surface(fs, "x1", "x2", estimand = "parameter", what = "sigma",
+                    type = "both", data = ds, n = 12L)
+```
+
+## 6.10 `plot_gamlss_fit()`
+
+```{r p-fit, eval=has_gg && has_dist}
+# 1. Fit with a central band
+plot_gamlss_fit(fit, "dose", data = d, n = 20L)
+# 2. A wider band and jittered points
+plot_gamlss_fit(fit, "dose", probs = c(.025, .5, .975), jitter = TRUE,
+                data = d, n = 20L)
+# 3. By treatment
+plot_gamlss_fit(fit, "dose", by = "trt", data = d, n = 20L)
+```
+
+## 6.11 `plot_gamlss_diagnostics()`
+
+```{r p-diag, eval=has_gg}
+# 1. Residuals against fitted values
+plot_gamlss_diagnostics(fit, "residual_fitted", data = d)
+# 2. Quantile-quantile plot
+plot_gamlss_diagnostics(fit, "qq", data = d)
+# 3. Histogram of the probability integral transform
+plot_gamlss_diagnostics(fit, "pit", bins = 12L, data = d)
+```
+
+## 6.12 `plot_gamlss_compare()`
+
+```{r p-compare, eval=has_gg}
+# 1. AIC of the three polynomials
+plot_gamlss_compare(linear = m1, quadratic = m2, cubic = m3, criterion = "AIC")
+# 2. All criteria side by side
+plot_gamlss_compare(linear = m1, quadratic = m2, cubic = m3, criterion = "all")
+# 3. Comparison of the predicted means
+if (has_dist) {
+  plot_gamlss_compare(quadratic = m2, cubic = m3, type = "estimand",
+                      x = "dose", data = d)
+}
+```
+
+## 6.13 `plot_gamlss_zero_adjusted()`
+
+```{r p-zadj, eval=has_gg && has_zadj}
+# 1. Components in panels
+plot_gamlss_zero_adjusted(zfit, "trt", data = dz)
+# 2. Normalized scale
+plot_gamlss_zero_adjusted(zfit, "trt", style = "normalized", data = dz)
+# 3. The graphical layer edited by the user
+plot_gamlss_zero_adjusted(zfit, "trt", data = dz) +
+  ggplot2::labs(title = "Zero-adjusted decomposition")
+```
+
+## 6.14 Themes
+
+```{r themes, eval=has_gg}
+p <- plot_gamlss_estimand(fit, "dose", data = d, n = 15L)
+# 1. Default theme
+p + theme_gamlss()
+# 2. Compact theme for a journal
+p + theme_gamlss_journal()
+# 3. Theme for projection
+p + theme_gamlss_presentation()
+```
+
+```{r themes-args, eval=has_gg}
+# Three typical adjustments, one per theme
+p + theme_gamlss(base_size = 13)
+p + theme_gamlss_journal(base_size = 8, grid = TRUE)
+p + theme_gamlss_presentation(base_size = 18, grid = FALSE)
+```
+
+## 6.15 `autoplot()` and `plot()`
+
+```{r autoplot, eval=has_gg && has_dist}
+ds_sum <- gamlss_distribution_summary(fit, nd, data = d)
+plan <- gamlss_posthoc_plan(fit, estimand = "mean", contrast = "pairwise")
+# 1. A post-hoc result
+ggplot2::autoplot(ph)
+# 2. A distributional summary
+ggplot2::autoplot(ds_sum, x = "trt")
+# 3. A capability plan
+ggplot2::autoplot(plan)
+```
+
+```{r plot-methods, eval=has_gg && has_dist, fig.show='hide'}
+# The `plot()` methods draw and return the object invisibly
+invisible(plot(ph))
+invisible(plot(tr))
+invisible(plot(plan))
+```
+
+# 7. Interoperability and reports
+
+## 7.1 `tidy()`, `glance()`, `augment()`
+
+```{r broom, eval=has_broom && has_core}
+# 1. Estimates in long form
+head(generics::tidy(ph))
+# 2. Contrasts, without the interval
+head(generics::tidy(ph, component = "contrasts", conf.int = FALSE))
+# 3. One-row summary and augmented data
+generics::glance(ph)
+head(generics::augment(ph))
+```
+
+## 7.2 `model_parameters()`
+
+```{r params-pkg, eval=has_param && has_core}
+# 1. An easystats-style table
+mp <- parameters::model_parameters(ph)
+head(mp)
+# 2. As an ordinary data frame
+head(as.data.frame(mp))
+# 3. Only the columns of interest
+head(as.data.frame(mp)[, c("Parameter", "Coefficient")])
+```
+
+## 7.3 `as_flextable()`
+
+```{r flex, eval=has_flex && has_core}
+# 1. Estimates
+as_flextable(ph)
+# 2. Contrasts
+as_flextable(ph, component = "contrasts")
+# 3. More decimal places
+as_flextable(ph, component = "contrasts", digits = 4)
+```
+
+## 7.4 `export_to_latex()` and `export_to_word()`
+
+```{r export, eval=has_core}
+# 1. LaTeX code for the estimates
+cat(substr(export_to_latex(ph), 1, 120))
+# 2. Contrasts with a caption
+cat(substr(export_to_latex(ph, component = "contrasts",
+                           caption = "Pairwise contrasts"), 1, 120))
+# 3. A .tex file in a temporary directory
+tex <- file.path(tempdir(), "posthoc.tex")
+invisible(export_to_latex(ph, file = tex))
+file.exists(tex)
+```
+
+```{r export-word, eval=has_offi && has_core}
+# 1. Estimates in .docx
+f1 <- file.path(tempdir(), "estimates.docx")
+invisible(export_to_word(ph, file = f1))
+# 2. Contrasts in .docx
+f2 <- file.path(tempdir(), "contrasts.docx")
+invisible(export_to_word(ph, file = f2, component = "contrasts"))
+# 3. A custom title and rounding
+f3 <- file.path(tempdir(), "report.docx")
+invisible(export_to_word(ph, file = f3, title = "Results", digits = 4))
+file.exists(f1, f2, f3)
+```
+
+## 7.5 `generate_report()`
+
+```{r report, eval=has_core}
+# 1. A markdown report returned as text
+rep_md <- generate_report(ph, output = "md", include_plots = FALSE)
+cat(substr(rep_md, 1, 120))
+# 2. With a custom title
+rep_md2 <- generate_report(ph, output = "md", title = "Treatment analysis",
+                           include_plots = FALSE)
+cat(substr(rep_md2, 1, 120))
+# 3. Written to a temporary file
+fmd <- file.path(tempdir(), "report.md")
+invisible(generate_report(ph, output = "md", file = fmd, include_plots = FALSE))
+file.exists(fmd)
+```
+
+# 8. Where to go next
+
+- `vignette("workflow")` explains the five decisions behind every call above.
+- `vignette("estimands-and-standardization")` develops the target population.
+- `vignette("visualization")` covers the graphics layer in depth.
+- `vignette("case-study-agronomy")` runs one complete analysis end to end.
+- `vignette("advanced-workflows")` covers meta-analysis, longitudinal data,
+  two-part models and predictive validation.
+- `vignette("missing-data")` covers multiple imputation and pooling.

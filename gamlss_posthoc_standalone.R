@@ -1,5 +1,5 @@
-# gamlssPosthoc 0.2.0 — standalone development script
-# Generated 2026-08-08. Prefer installing the package for normal use.
+# gamlssPosthoc 0.3.0 standalone source
+# Generated from package R/ files. Package installation is preferred.
 
 
 # ===== utils.R =====
@@ -488,7 +488,9 @@
   vars
 }
 
-.gph_predict_parameter <- function(object, newdata, what, data = NULL) {
+.gph_predict_parameter <- function(object, newdata, what, data = NULL,
+                                   type = c("response", "link")) {
+  type <- match.arg(type)
   pars <- .gph_model_parameters(object)
   if (!what %in% pars) {
     stop("Parameter '", what, "' is not available. Available parameters: ",
@@ -496,11 +498,19 @@
   }
   if (.gph_is_zadj(object)) {
     return(as.numeric(stats::predict(object, parameter = what, newdata = newdata,
-                                     type = "response", data = data)))
+                                     type = type, data = data)))
   }
   # Current CRAN gamlss exposes `what` for its distributional parameters.
   as.numeric(stats::predict(object, what = what, newdata = newdata,
-                            type = "response", data = data))
+                            type = type, data = data))
+}
+
+.gph_predict_parameter_standardized <- function(object, eval_info, what, data = NULL,
+                                                scale = c("response", "link")) {
+  scale <- match.arg(scale)
+  z <- .gph_predict_parameter(object, eval_info$eval_data, what, data = data,
+                              type = scale)
+  .gph_aggregate(z, eval_info)
 }
 
 .gph_predict_parameters <- function(object, newdata, data = NULL) {
@@ -768,6 +778,151 @@
 }
 
 
+# ===== gamlss_posthoc_plan.R =====
+
+#' Diagnose post-hoc capabilities for a fitted GAMLSS model
+#'
+#' @description
+#' Inspects model class, family, distributional parameters, smooth terms,
+#' optional dependencies, and the requested estimand. The result documents
+#' which engines are eligible and explains the recommended engine and
+#' uncertainty layer before inference is run.
+#'
+#' @param object A fitted `gamlss` or `gamlssZadj` model.
+#' @param estimand Requested estimand accepted by [gamlss_posthoc()].
+#' @param what Distributional parameter for a parameter-wise estimand.
+#' @param contrast Requested level-comparison geometry.
+#' @param comparison Scientific contrast scale.
+#' @param population Target standardization population.
+#' @param weights Weighting rule used to determine engine eligibility. Numeric
+#'   observation weights rule out the `emmeans` reference-grid engine.
+#' @param uncertainty Requested uncertainty layer.
+#' @return An object of class `gamlss_posthoc_plan`.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(13)
+#'   d <- data.frame(x = seq(0, 1, length.out = 60),
+#'                   trt = factor(rep(c("A", "B"), 30)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = exp(.5 + .4*d$x + .15*(d$trt=="B")), sigma=.25)
+#'   fit <- gamlss::gamlss(y ~ trt + x, sigma.formula = ~ trt,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   # 1. Marginal response mean on the observed population
+#'   gamlss_posthoc_plan(fit, estimand = "mean", population = "observed")
+#'   # 2. Parameter-wise reference-grid inference
+#'   gamlss_posthoc_plan(fit, estimand = "parameter", what = "sigma",
+#'                       population = "reference", uncertainty = "delta")
+#'   # 3. Distribution-derived variance
+#'   gamlss_posthoc_plan(fit, estimand = "variance", contrast = "pairwise")
+#' }
+gamlss_posthoc_plan <- function(object, estimand = "parameter", what = "mu",
+                                 contrast = "none", comparison = "difference",
+                                 population = "observed", weights = NULL,
+                                 uncertainty = "auto") {
+  if (!.gph_is_gamlss(object)) stop("`object` must inherit from 'gamlss' or 'gamlssZadj'.", call. = FALSE)
+  estimand <- match.arg(estimand, c("parameter", "mean", "variance", "quantile", "prob_zero", "custom"))
+  contrast <- match.arg(contrast, c("none", "pairwise", "reference", "sequential", "poly", "opoly"))
+  comparison <- match.arg(comparison, c("difference", "ratio", "log_ratio", "percent_change"))
+  population <- .gph_resolve_population(population)
+  uncertainty <- match.arg(uncertainty, c("auto", "delta", "simulation", "bootstrap", "none"))
+  ad <- .gph_adapter(object)
+  if (estimand == "parameter" && !what %in% ad$parameters) {
+    stop("Parameter '", what, "' is not available. Available parameters: ",
+         paste(ad$parameters, collapse = ", "), ".", call. = FALSE)
+  }
+  elig <- .gph_engine_eligibility(object, estimand, what, contrast, comparison, population, weights)
+  route <- .gph_choose_engine(object, estimand, what, contrast, comparison, "auto", population, weights)
+  planned_engine <- route$engine
+  unc <- .gph_choose_uncertainty(planned_engine, uncertainty, estimand, elig$smoother)
+  unc_recommended <- unc
+  if (planned_engine == "emmeans" && !unc %in% c("delta", "none")) unc_recommended <- "delta"
+  if (planned_engine == "distribution" && unc %in% c("delta", "simulation")) unc_recommended <- "bootstrap"
+  if (planned_engine == "marginaleffects" && identical(unc, "bootstrap")) planned_engine <- "distribution"
+  if (uncertainty == "auto" && planned_engine == "distribution" && estimand != "parameter") {
+    unc_recommended <- "none; use bootstrap explicitly when interval inference is required"
+  }
+  dep_names <- c("gamlss", "gamlss.dist", "gamlss.inf", "distributions3", "emmeans",
+                 "marginaleffects", "future", "future.apply")
+  deps <- data.frame(
+    package = dep_names,
+    installed = vapply(dep_names, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1)),
+    stringsAsFactors = FALSE
+  )
+  capabilities <- data.frame(
+    engine = c("emmeans", "marginaleffects", "distribution"),
+    eligible = c(elig$emmeans, elig$marginaleffects, TRUE),
+    available = c(requireNamespace("emmeans", quietly = TRUE),
+                  requireNamespace("marginaleffects", quietly = TRUE),
+                  requireNamespace("gamlss", quietly = TRUE) &&
+                    requireNamespace("distributions3", quietly = TRUE) &&
+                    (!ad$zero_adjusted || (requireNamespace("gamlss.dist", quietly = TRUE) &&
+                                           requireNamespace("gamlss.inf", quietly = TRUE)))),
+    reason = c(
+      if (elig$emmeans) "Supported single parameter on an explicit reference population, with no selected smoother." else "Requires ordinary mu/sigma/nu/tau parameter, no selected smoother, arithmetic differences, population=reference, and non-numeric reference-grid weights.",
+      if (elig$marginaleffects) "Parameter-wise standardization is eligible; runtime capability is still checked." else "Current adapter reserves marginaleffects for ordinary parameter-wise GAMLSS requests.",
+      if (ad$zero_adjusted) "Uses the full positive distribution plus the zero mass." else "Uses the full predictive distribution via prodist()."
+    ), stringsAsFactors = FALSE
+  )
+  parameter_capabilities <- ad$parameter_table
+  if (nrow(parameter_capabilities)) {
+    parameter_capabilities$emmeans_eligible <-
+      !ad$zero_adjusted & parameter_capabilities$parameter %in% c("mu", "sigma", "nu", "tau") &
+      !parameter_capabilities$smoother & identical(population, "reference") & !is.numeric(weights)
+    parameter_capabilities$marginaleffects_candidate <-
+      !ad$zero_adjusted & parameter_capabilities$parameter %in% ad$parameters
+    parameter_capabilities$distribution_prediction <- TRUE
+  }
+  warnings <- character()
+  if (ad$zero_adjusted && !requireNamespace("gamlss.dist", quietly = TRUE)) warnings <- c(warnings, "gamlss.dist is needed to reconstruct the positive distribution generically.")
+  if (elig$smoother) warnings <- c(warnings, "A smoother is present in the selected submodel; emmeans is intentionally avoided.")
+  if (contrast %in% c("poly", "opoly") && comparison != "difference") warnings <- c(warnings, "Polynomial contrasts must use arithmetic linear combinations.")
+  if (is.numeric(weights) && comparison %in% c("ratio", "log_ratio", "percent_change") && uncertainty %in% c("auto", "delta", "simulation")) {
+    warnings <- c(warnings, "Numeric user weights with nonlinear contrast scales use standardized group predictions; direct marginaleffects covariance shortcuts are intentionally avoided. Request bootstrap for interval inference if needed.")
+  }
+  out <- list(
+    overview = data.frame(model_class = ad$model_class, family = ad$family,
+                          zero_adjusted = ad$zero_adjusted,
+                          parameters = paste(ad$parameters, collapse = ", "), stringsAsFactors = FALSE),
+    parameter_table = ad$parameter_table,
+    parameter_capabilities = parameter_capabilities,
+    dependencies = deps,
+    capabilities = capabilities,
+    request = data.frame(estimand = estimand, parameter = what, contrast = contrast,
+                         comparison = comparison, population = population,
+                         weighting = if (is.null(weights)) "default" else if (is.numeric(weights)) "numeric user weights" else as.character(weights)[1L],
+                         uncertainty = uncertainty, stringsAsFactors = FALSE),
+    recommendation = data.frame(engine = planned_engine, uncertainty = unc_recommended,
+                                reason = if (planned_engine == "emmeans") "Direct parameter-wise reference-grid marginal means are supported."
+                                else if (planned_engine == "marginaleffects") "Prediction-based standardization is preferred for this parameter-wise request."
+                                else if (route$engine == "marginaleffects" && planned_engine == "distribution") "Refit bootstrap uncertainty is handled by the distribution engine for version-stable behavior."
+                                else "The requested target depends on the full distribution or multiple parameters.",
+                                stringsAsFactors = FALSE),
+    warnings = warnings
+  )
+  class(out) <- "gamlss_posthoc_plan"
+  out
+}
+
+#' @method print gamlss_posthoc_plan
+#' @export
+#' @noRd
+print.gamlss_posthoc_plan <- function(x, ...) {
+  cat("gamlssPosthoc diagnostic plan\n\n")
+  print(x$overview, row.names = FALSE)
+  cat("\nDistributional parameters\n")
+  print(x$parameter_table, row.names = FALSE)
+  cat("\nParameter capabilities\n")
+  print(x$parameter_capabilities, row.names = FALSE)
+  cat("\nEngine capabilities\n")
+  print(x$capabilities, row.names = FALSE)
+  cat("\nRecommendation\n")
+  print(x$recommendation, row.names = FALSE)
+  if (length(x$warnings)) cat("\nWarnings\n- ", paste(x$warnings, collapse = "\n- "), "\n", sep = "")
+  invisible(x)
+}
+
+
 # ===== gamlss_posthoc.R =====
 
 #' Reliable marginal and distributional post-hoc inference for GAMLSS models
@@ -837,13 +992,20 @@
 #' if (requireNamespace("gamlss", quietly = TRUE) &&
 #'     requireNamespace("gamlss.dist", quietly = TRUE)) {
 #'   set.seed(11)
-#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 30)))
+#'   d <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 20)))
 #'   d$y <- gamlss.dist::rGA(nrow(d),
-#'     mu = ifelse(d$trt == "A", 2, 2.7), sigma = 0.3)
+#'     mu = c(A = 2, B = 2.5, C = 3.0)[d$trt], sigma = 0.25)
 #'   fit <- gamlss::gamlss(y ~ trt, data = d, family = gamlss.dist::GA,
 #'                         trace = FALSE)
-#'   gamlss_posthoc(fit, specs = "trt", estimand = "mean",
-#'                  contrast = "pairwise", comparison = "percent_change",
+#'   # 1. Difference between marginal response means
+#'   gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+#'                  comparison = "difference", uncertainty = "none", data = d)
+#'   # 2. Ratios relative to the first treatment
+#'   gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "reference",
+#'                  comparison = "ratio", uncertainty = "none", data = d)
+#'   # 3. Compare the distributional sigma parameter on a reference grid
+#'   gamlss_posthoc(fit, "trt", estimand = "parameter", what = "sigma",
+#'                  population = "reference", contrast = "none",
 #'                  uncertainty = "none", data = d)
 #' }
 gamlss_posthoc <- function(object, specs, by = NULL,
@@ -938,6 +1100,8 @@ gamlss_posthoc <- function(object, specs, by = NULL,
       ans$estimand <- estimand
       ans$estimand_info <- .gph_estimand_info(object, estimand, what, prob, population, ans$weighting)
       ans$call <- match.call()
+      ans$model <- object
+      ans$data <- data
       class(ans) <- "gamlss_posthoc"
       return(ans)
     }
@@ -997,7 +1161,7 @@ gamlss_posthoc <- function(object, specs, by = NULL,
                 estimand_info = info, what = what, specs = specs, by = by,
                 contrast_method = contrast, comparison = comparison,
                 population = "reference", weighting = emm_weighting,
-                uncertainty_method = uncertainty, call = match.call(), emmGrid = emm_resp,
+                uncertainty_method = uncertainty, call = match.call(), model = object, data = data, emmGrid = emm_resp,
                 notes = "Parameter-wise inference from emmeans; arithmetic response-scale contrasts use regrid(transform='response').")
     class(out) <- "gamlss_posthoc"
     return(out)
@@ -1063,6 +1227,7 @@ gamlss_posthoc <- function(object, specs, by = NULL,
               contrast_method = contrast, comparison = comparison,
               population = population, weighting = eval_info$weighting,
               uncertainty_method = uncertainty, call = match.call(),
+              model = object, data = data,
               bootstrap = if (uncertainty == "bootstrap") bootstrap else NULL,
               draws = if (keep_draws) draw_mat else NULL,
               notes = c("Predictions were standardized over the declared target population.",
@@ -1175,151 +1340,6 @@ print.gamlss_posthoc <- function(x, ...) {
   invisible(x)
 }
 
-#' @method plot gamlss_posthoc
-#' @export
-#' @noRd
-plot.gamlss_posthoc <- function(x, ...) {
-  d <- x$estimates
-  fac <- intersect(c(x$specs, x$by), names(d))
-  if (!length(fac)) stop("No grouping variable available for plotting.", call. = FALSE)
-  g <- fac[1]
-  xx <- seq_len(nrow(d))
-  graphics::plot(xx, d$estimate, xaxt = "n", xlab = g, ylab = x$estimand_info$target[1], pch = 19, ...)
-  graphics::axis(1, at = xx, labels = as.character(d[[g]]))
-  if (all(c("lower.CL", "upper.CL") %in% names(d))) {
-    graphics::arrows(xx, d$lower.CL, xx, d$upper.CL, angle = 90, code = 3, length = 0.05)
-  }
-  invisible(x)
-}
-
-
-# ===== gamlss_posthoc_plan.R =====
-
-#' Diagnose post-hoc capabilities for a fitted GAMLSS model
-#'
-#' @description
-#' Inspects model class, family, distributional parameters, smooth terms,
-#' optional dependencies, and the requested estimand. The result documents
-#' which engines are eligible and explains the recommended engine and
-#' uncertainty layer before inference is run.
-#'
-#' @param object A fitted `gamlss` or `gamlssZadj` model.
-#' @param estimand Requested estimand accepted by [gamlss_posthoc()].
-#' @param what Distributional parameter for a parameter-wise estimand.
-#' @param contrast Requested level-comparison geometry.
-#' @param comparison Scientific contrast scale.
-#' @param population Target standardization population.
-#' @param weights Weighting rule used to determine engine eligibility. Numeric
-#'   observation weights rule out the `emmeans` reference-grid engine.
-#' @param uncertainty Requested uncertainty layer.
-#' @return An object of class `gamlss_posthoc_plan`.
-#' @export
-gamlss_posthoc_plan <- function(object, estimand = "parameter", what = "mu",
-                                 contrast = "none", comparison = "difference",
-                                 population = "observed", weights = NULL,
-                                 uncertainty = "auto") {
-  if (!.gph_is_gamlss(object)) stop("`object` must inherit from 'gamlss' or 'gamlssZadj'.", call. = FALSE)
-  estimand <- match.arg(estimand, c("parameter", "mean", "variance", "quantile", "prob_zero", "custom"))
-  contrast <- match.arg(contrast, c("none", "pairwise", "reference", "sequential", "poly", "opoly"))
-  comparison <- match.arg(comparison, c("difference", "ratio", "log_ratio", "percent_change"))
-  population <- .gph_resolve_population(population)
-  uncertainty <- match.arg(uncertainty, c("auto", "delta", "simulation", "bootstrap", "none"))
-  ad <- .gph_adapter(object)
-  if (estimand == "parameter" && !what %in% ad$parameters) {
-    stop("Parameter '", what, "' is not available. Available parameters: ",
-         paste(ad$parameters, collapse = ", "), ".", call. = FALSE)
-  }
-  elig <- .gph_engine_eligibility(object, estimand, what, contrast, comparison, population, weights)
-  route <- .gph_choose_engine(object, estimand, what, contrast, comparison, "auto", population, weights)
-  planned_engine <- route$engine
-  unc <- .gph_choose_uncertainty(planned_engine, uncertainty, estimand, elig$smoother)
-  unc_recommended <- unc
-  if (planned_engine == "emmeans" && !unc %in% c("delta", "none")) unc_recommended <- "delta"
-  if (planned_engine == "distribution" && unc %in% c("delta", "simulation")) unc_recommended <- "bootstrap"
-  if (planned_engine == "marginaleffects" && identical(unc, "bootstrap")) planned_engine <- "distribution"
-  if (uncertainty == "auto" && planned_engine == "distribution" && estimand != "parameter") {
-    unc_recommended <- "none; use bootstrap explicitly when interval inference is required"
-  }
-  dep_names <- c("gamlss", "gamlss.dist", "gamlss.inf", "distributions3", "emmeans",
-                 "marginaleffects", "future", "future.apply")
-  deps <- data.frame(
-    package = dep_names,
-    installed = vapply(dep_names, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1)),
-    stringsAsFactors = FALSE
-  )
-  capabilities <- data.frame(
-    engine = c("emmeans", "marginaleffects", "distribution"),
-    eligible = c(elig$emmeans, elig$marginaleffects, TRUE),
-    available = c(requireNamespace("emmeans", quietly = TRUE),
-                  requireNamespace("marginaleffects", quietly = TRUE),
-                  requireNamespace("gamlss", quietly = TRUE) &&
-                    requireNamespace("distributions3", quietly = TRUE) &&
-                    (!ad$zero_adjusted || (requireNamespace("gamlss.dist", quietly = TRUE) &&
-                                           requireNamespace("gamlss.inf", quietly = TRUE)))),
-    reason = c(
-      if (elig$emmeans) "Supported single parameter on an explicit reference population, with no selected smoother." else "Requires ordinary mu/sigma/nu/tau parameter, no selected smoother, arithmetic differences, population=reference, and non-numeric reference-grid weights.",
-      if (elig$marginaleffects) "Parameter-wise standardization is eligible; runtime capability is still checked." else "Current adapter reserves marginaleffects for ordinary parameter-wise GAMLSS requests.",
-      if (ad$zero_adjusted) "Uses the full positive distribution plus the zero mass." else "Uses the full predictive distribution via prodist()."
-    ), stringsAsFactors = FALSE
-  )
-  parameter_capabilities <- ad$parameter_table
-  if (nrow(parameter_capabilities)) {
-    parameter_capabilities$emmeans_eligible <-
-      !ad$zero_adjusted & parameter_capabilities$parameter %in% c("mu", "sigma", "nu", "tau") &
-      !parameter_capabilities$smoother & identical(population, "reference") & !is.numeric(weights)
-    parameter_capabilities$marginaleffects_candidate <-
-      !ad$zero_adjusted & parameter_capabilities$parameter %in% ad$parameters
-    parameter_capabilities$distribution_prediction <- TRUE
-  }
-  warnings <- character()
-  if (ad$zero_adjusted && !requireNamespace("gamlss.dist", quietly = TRUE)) warnings <- c(warnings, "gamlss.dist is needed to reconstruct the positive distribution generically.")
-  if (elig$smoother) warnings <- c(warnings, "A smoother is present in the selected submodel; emmeans is intentionally avoided.")
-  if (contrast %in% c("poly", "opoly") && comparison != "difference") warnings <- c(warnings, "Polynomial contrasts must use arithmetic linear combinations.")
-  if (is.numeric(weights) && comparison %in% c("ratio", "log_ratio", "percent_change") && uncertainty %in% c("auto", "delta", "simulation")) {
-    warnings <- c(warnings, "Numeric user weights with nonlinear contrast scales use standardized group predictions; direct marginaleffects covariance shortcuts are intentionally avoided. Request bootstrap for interval inference if needed.")
-  }
-  out <- list(
-    overview = data.frame(model_class = ad$model_class, family = ad$family,
-                          zero_adjusted = ad$zero_adjusted,
-                          parameters = paste(ad$parameters, collapse = ", "), stringsAsFactors = FALSE),
-    parameter_table = ad$parameter_table,
-    parameter_capabilities = parameter_capabilities,
-    dependencies = deps,
-    capabilities = capabilities,
-    request = data.frame(estimand = estimand, parameter = what, contrast = contrast,
-                         comparison = comparison, population = population,
-                         weighting = if (is.null(weights)) "default" else if (is.numeric(weights)) "numeric user weights" else as.character(weights)[1L],
-                         uncertainty = uncertainty, stringsAsFactors = FALSE),
-    recommendation = data.frame(engine = planned_engine, uncertainty = unc_recommended,
-                                reason = if (planned_engine == "emmeans") "Direct parameter-wise reference-grid marginal means are supported."
-                                else if (planned_engine == "marginaleffects") "Prediction-based standardization is preferred for this parameter-wise request."
-                                else if (route$engine == "marginaleffects" && planned_engine == "distribution") "Refit bootstrap uncertainty is handled by the distribution engine for version-stable behavior."
-                                else "The requested target depends on the full distribution or multiple parameters.",
-                                stringsAsFactors = FALSE),
-    warnings = warnings
-  )
-  class(out) <- "gamlss_posthoc_plan"
-  out
-}
-
-#' @method print gamlss_posthoc_plan
-#' @export
-#' @noRd
-print.gamlss_posthoc_plan <- function(x, ...) {
-  cat("gamlssPosthoc diagnostic plan\n\n")
-  print(x$overview, row.names = FALSE)
-  cat("\nDistributional parameters\n")
-  print(x$parameter_table, row.names = FALSE)
-  cat("\nParameter capabilities\n")
-  print(x$parameter_capabilities, row.names = FALSE)
-  cat("\nEngine capabilities\n")
-  print(x$capabilities, row.names = FALSE)
-  cat("\nRecommendation\n")
-  print(x$recommendation, row.names = FALSE)
-  if (length(x$warnings)) cat("\nWarnings\n- ", paste(x$warnings, collapse = "\n- "), "\n", sep = "")
-  invisible(x)
-}
-
 
 # ===== gamlss_distribution_summary.R =====
 
@@ -1346,9 +1366,15 @@ print.gamlss_posthoc_plan <- function(x, ...) {
 #'     requireNamespace("distributions3", quietly = TRUE)) {
 #'   set.seed(12)
 #'   d <- data.frame(x = seq(0.2, 2, length.out = 60))
-#'   d$y <- gamlss.dist::rGA(nrow(d), mu = exp(0.1 + 0.35 * d$x), sigma = 0.28)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = exp(0.1 + 0.35*d$x), sigma = 0.28)
 #'   fit <- gamlss::gamlss(y ~ x, data = d, family = gamlss.dist::GA, trace = FALSE)
-#'   gamlss_distribution_summary(fit, data.frame(x = c(0.5, 1, 1.5)), data = d)
+#'   # 1. Default 2.5%, 50%, and 97.5% quantiles
+#'   gamlss_distribution_summary(fit, data.frame(x = c(.5, 1, 1.5)), data = d)
+#'   # 2. Agronomic lower/median/upper predictive summaries
+#'   gamlss_distribution_summary(fit, data.frame(x = c(.75, 1.25)),
+#'                               probs = c(.10, .50, .90), data = d)
+#'   # 3. A single prediction profile
+#'   gamlss_distribution_summary(fit, data.frame(x = 1), probs = c(.25,.5,.75), data = d)
 #' }
 gamlss_distribution_summary <- function(object, newdata, probs = c(0.025, 0.5, 0.975),
                                          data = NULL, positive_dist_fun = NULL) {
@@ -1378,6 +1404,9 @@ gamlss_distribution_summary <- function(object, newdata, probs = c(0.025, 0.5, 0
     }
   }
   out$sd <- sqrt(out$variance)
+  attr(out, "model") <- object
+  attr(out, "data") <- data
+  class(out) <- c("gamlss_distribution_summary", "data.frame")
   out
 }
 
@@ -1429,6 +1458,26 @@ gamlss_distribution_summary <- function(object, newdata, probs = c(0.025, 0.5, 0
 #' @return Object of class `gamlss_trend` with curve/derivative values and,
 #'   where requested, detected turning points or extrema.
 #' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(14)
+#'   d <- data.frame(dose = rep(seq(0, 120, length.out = 10), each = 8))
+#'   mu <- exp(.4 + .015*d$dose - .00007*d$dose^2)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = .22)
+#'   fit <- gamlss::gamlss(y ~ dose + I(dose^2), family = gamlss.dist::GA,
+#'                         data = d, trace = FALSE)
+#'   # 1. Predicted response-mean curve
+#'   gamlss_trend(fit, "dose", method = "curve", n = 25,
+#'                uncertainty = "none", data = d)
+#'   # 2. First derivative of the mean curve
+#'   gamlss_trend(fit, "dose", method = "derivative", derivative_order = 1,
+#'                n = 25, uncertainty = "none", data = d)
+#'   # 3. Refined maximum on the supplied dose range
+#'   gamlss_trend(fit, "dose", method = "optimum", optimum = "maximum",
+#'                n = 25, uncertainty = "none", data = d)
+#' }
 gamlss_trend <- function(object, x, by = NULL, at_x = NULL, n = 100L,
                          method = c("curve", "derivative", "turning_points", "optimum"),
                          derivative_order = 1L,
@@ -1564,6 +1613,11 @@ gamlss_trend <- function(object, x, by = NULL, at_x = NULL, n = 100L,
       op$x_lower[j] <- stats::quantile(z, 0.025, na.rm = TRUE)
       op$x_upper[j] <- stats::quantile(z, 0.975, na.rm = TRUE)
     }
+    names(draws_op) <- if (length(by)) vapply(seq_len(nrow(op)), function(j) {
+      vals <- vapply(by, function(b) as.character(op[[b]][j]), character(1))
+      paste(paste(by, vals, sep = "="), collapse = ", ")
+    }, character(1)) else "All"
+    attr(op, "optimum_draws") <- draws_op
   }
   .gph_trend_object(d, method, x, by, estimand, ph, special = op)
 }
@@ -1714,20 +1768,6 @@ print.gamlss_trend <- function(x, ...) {
   invisible(x)
 }
 
-#' @method plot gamlss_trend
-#' @export
-#' @noRd
-plot.gamlss_trend <- function(x, ...) {
-  d <- x$values
-  ycol <- if (grepl("derivative", x$method)) x$method else "estimate"
-  if (!ycol %in% names(d)) ycol <- "estimate"
-  graphics::plot(d[[x$x]], d[[ycol]], type = "l", xlab = x$x, ylab = ycol, ...)
-  if (!is.null(x$special_points) && nrow(x$special_points)) {
-    graphics::points(x$special_points[[x$x]], x$special_points$estimate, pch = 19)
-  }
-  invisible(x)
-}
-
 
 # ===== gamlss_poly_compare.R =====
 
@@ -1752,6 +1792,22 @@ plot.gamlss_trend <- function(x, ...) {
 #'   deviance, GAIC, and sequential LR statistic, degrees-of-freedom difference,
 #'   and p-value.
 #' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(15)
+#'   d <- data.frame(dose = rep(seq(0, 100, length.out = 8), each = 7))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = exp(.5 + .01*d$dose - .00004*d$dose^2), sigma=.22)
+#'   m1 <- gamlss::gamlss(y ~ dose, family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   m2 <- gamlss::gamlss(y ~ dose + I(dose^2), family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   m3 <- gamlss::gamlss(y ~ dose + I(dose^2) + I(dose^3), family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   # 1. AIC penalty
+#'   gamlss_poly_compare(linear=m1, quadratic=m2, cubic=m3, k=2)
+#'   # 2. BIC-like penalty
+#'   gamlss_poly_compare(linear=m1, quadratic=m2, cubic=m3, k=log(nrow(d)))
+#'   # 3. Models can also be supplied as one named list
+#'   gamlss_poly_compare(list(linear=m1, quadratic=m2, cubic=m3), k=2)
+#' }
 gamlss_poly_compare <- function(..., k = 2) {
   if (!is.numeric(k) || length(k) != 1L || !is.finite(k) || k <= 0) {
     stop("`k` must be one positive finite number.", call. = FALSE)
@@ -1799,6 +1855,25 @@ gamlss_poly_compare <- function(..., k = 2) {
 #' @param Letters Character vector passed to `multcompView::multcompLetters()`.
 #' @return The estimates data frame with an additional `.group` column.
 #' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("emmeans", quietly = TRUE) &&
+#'     requireNamespace("multcompView", quietly = TRUE)) {
+#'   set.seed(16)
+#'   d <- data.frame(trt=factor(rep(c("A","B","C"), each=25)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu=c(A=2,B=2.5,C=3.2)[d$trt], sigma=.20)
+#'   fit <- gamlss::gamlss(y~trt, family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   ph <- gamlss_posthoc(fit, "trt", estimand="parameter", what="mu",
+#'                        population="reference", contrast="pairwise",
+#'                        engine="emmeans", uncertainty="delta", data=d)
+#'   # 1. Default 5% CLD
+#'   gamlss_cld(ph)
+#'   # 2. More liberal display threshold
+#'   gamlss_cld(ph, alpha=.10)
+#'   # 3. Holm-adjust raw p-values before constructing letters
+#'   gamlss_cld(ph, p_adjust="holm")
+#' }
 gamlss_cld <- function(x, alpha = 0.05, p_adjust = NULL,
                        Letters = c(letters, LETTERS, ".")) {
   if (!is.numeric(alpha) || length(alpha) != 1L || !is.finite(alpha) || alpha <= 0 || alpha >= 1) {
@@ -1849,6 +1924,1287 @@ gamlss_cld <- function(x, alpha = 0.05, p_adjust = NULL,
 }
 
 
+# ===== plot_data.R =====
+
+# Plot-data layer -------------------------------------------------------------
+
+.gph_long_group_label <- function(df, cols) {
+  if (!length(cols)) return(rep("All", nrow(df)))
+  apply(df[, cols, drop = FALSE], 1L, function(z) paste(paste(cols, z, sep = "="), collapse = ", "))
+}
+
+.gph_numeric_grid <- function(data, x, n = 100L) {
+  n <- max(3L, as.integer(n)[1L])
+  seq(min(data[[x]], na.rm = TRUE), max(data[[x]], na.rm = TRUE), length.out = n)
+}
+
+.gph_plot_eval <- function(object, x = NULL, by = NULL, at = list(), newdata = NULL,
+                           population = "observed", weights = NULL, data = NULL, n = 100L) {
+  data <- .gph_get_data(object, data)
+  if (!is.null(newdata)) {
+    nd <- .gph_restore_classes(as.data.frame(newdata), data)
+    nd$.gph_group_id <- seq_len(nrow(nd))
+    nd$.gph_weight <- 1
+    groups <- nd[, setdiff(names(nd), c(".gph_group_id", ".gph_weight")), drop = FALSE]
+    groups$.gph_group_id <- seq_len(nrow(groups))
+    return(list(eval_data = nd, groups = groups, population = "newdata",
+                weighting = "none", base_data = nd, weights = nd$.gph_weight))
+  }
+  if (is.null(x) || !nzchar(x)) stop("Supply `x` or `newdata`.", call. = FALSE)
+  if (!x %in% names(data)) stop("`x` is not present in model data.", call. = FALSE)
+  if (is.numeric(data[[x]]) && is.null(at[[x]])) at[[x]] <- .gph_numeric_grid(data, x, n)
+  .gph_build_eval_data(object, data, specs = x, by = by, at = at,
+                       population = population, weights = .gph_resolve_weights(weights, data, population))
+}
+
+.gph_group_distribution_curve <- function(object, eval_info, response_grid = NULL,
+                                          type = c("density", "cdf", "survival"),
+                                          data = NULL, positive_dist_fun = NULL, n_response = 200L) {
+  type <- match.arg(type)
+  .gph_require("distributions3", "for distribution plots.")
+  ev <- eval_info$eval_data
+  D <- .gph_distribution(object, ev, data, positive_dist_fun)
+  gid <- ev$.gph_group_id
+  ids <- eval_info$groups$.gph_group_id
+  out <- list()
+  for (g in ids) {
+    ii <- which(gid == g)
+    w <- ev$.gph_weight[ii]; w <- w / sum(w)
+    if (is.null(response_grid)) {
+      if (.gph_is_zadj(object)) {
+        qs <- vapply(c(.001, .999), function(p) {
+          q <- vapply(ii, function(j) as.numeric(stats::quantile(D$positive[j], p, names = FALSE))[1L], numeric(1))
+          stats::weighted.mean(q, w, na.rm = TRUE)
+        }, numeric(1))
+        lo <- 0; hi <- max(qs[2], .Machine$double.eps)
+      } else {
+        qs <- vapply(c(.001, .999), function(p) {
+          q <- as.numeric(stats::quantile(D[ii], p, names = FALSE))
+          stats::weighted.mean(q, w, na.rm = TRUE)
+        }, numeric(1))
+        lo <- qs[1]; hi <- qs[2]
+      }
+      rg <- seq(lo, hi, length.out = max(50L, as.integer(n_response)))
+    } else rg <- sort(unique(as.numeric(response_grid)))
+    vals <- vapply(rg, function(y) {
+      if (.gph_is_zadj(object)) {
+        fp <- as.numeric(distributions3::pdf(D$positive[ii], y))
+        cp <- as.numeric(distributions3::cdf(D$positive[ii], y))
+        if (type == "density") z <- if (y == 0) rep(0, length(ii)) else (1 - D$prob_zero[ii]) * fp
+        else {
+          zc <- if (y < 0) rep(0, length(ii)) else D$prob_zero[ii] + (1 - D$prob_zero[ii]) * cp
+          z <- if (type == "cdf") zc else 1 - zc
+        }
+      } else {
+        z <- if (type == "density") as.numeric(distributions3::pdf(D[ii], y)) else {
+          zc <- as.numeric(distributions3::cdf(D[ii], y))
+          if (type == "cdf") zc else 1 - zc
+        }
+      }
+      stats::weighted.mean(z, w, na.rm = TRUE)
+    }, numeric(1))
+    rr0 <- eval_info$groups[eval_info$groups$.gph_group_id == g, , drop = FALSE]
+    label_cols <- setdiff(names(rr0), ".gph_group_id")
+    group_label <- .gph_long_group_label(rr0, label_cols)[1L]
+    rr <- rr0[rep(1L, length(rg)), , drop = FALSE]
+    rr$.gph_label <- group_label
+    rr$response <- rg; rr$value <- vals; rr$curve <- type
+    if (.gph_is_zadj(object)) rr$prob_zero <- stats::weighted.mean(D$prob_zero[ii], w, na.rm = TRUE)
+    out[[length(out) + 1L]] <- rr
+  }
+  z <- do.call(rbind, out); rownames(z) <- NULL; .gph_relabel_groups(z)
+}
+
+.gph_mixture_quantile <- function(object, D, ii, w, p) {
+  w <- w / sum(w)
+  if (.gph_is_zadj(object)) {
+    hbar <- sum(w * D$prob_zero[ii])
+    if (p <= hbar) return(0)
+    lo <- 0
+    hi <- max(vapply(ii, function(j) as.numeric(stats::quantile(D$positive[j], .9999, names = FALSE))[1L], numeric(1)), na.rm = TRUE)
+    Fmix <- function(y) sum(w * (D$prob_zero[ii] + (1 - D$prob_zero[ii]) * as.numeric(distributions3::cdf(D$positive[ii], y))))
+  } else {
+    lo <- min(as.numeric(stats::quantile(D[ii], .0001, names = FALSE)), na.rm = TRUE)
+    hi <- max(as.numeric(stats::quantile(D[ii], .9999, names = FALSE)), na.rm = TRUE)
+    Fmix <- function(y) sum(w * as.numeric(distributions3::cdf(D[ii], y)))
+  }
+  if (!is.finite(lo) || !is.finite(hi) || lo == hi) return(lo)
+  f <- function(y) Fmix(y) - p
+  flo <- f(lo); fhi <- f(hi)
+  if (flo >= 0) return(lo)
+  if (fhi <= 0) return(hi)
+  stats::uniroot(f, c(lo, hi), tol = 1e-7)$root
+}
+
+.gph_group_quantiles <- function(object, eval_info, probs, data = NULL, positive_dist_fun = NULL) {
+  .gph_require("distributions3", "for quantile plots.")
+  ev <- eval_info$eval_data; D <- .gph_distribution(object, ev, data, positive_dist_fun)
+  out <- list()
+  for (g in eval_info$groups$.gph_group_id) {
+    ii <- which(ev$.gph_group_id == g); w <- ev$.gph_weight[ii]
+    q <- vapply(probs, function(p) .gph_mixture_quantile(object, D, ii, w, p), numeric(1))
+    rr <- eval_info$groups[eval_info$groups$.gph_group_id == g, , drop = FALSE]
+    rr <- rr[rep(1L, length(probs)), , drop = FALSE]
+    rr$prob <- probs; rr$quantile <- q
+    out[[length(out) + 1L]] <- rr
+  }
+  z <- do.call(rbind, out); rownames(z) <- NULL; .gph_relabel_groups(z)
+}
+
+.gph_zero_components <- function(object, eval_info, data = NULL, positive_dist_fun = NULL) {
+  if (!.gph_is_zadj(object)) stop("Zero-adjusted plots require a `gamlssZadj` model.", call. = FALSE)
+  D <- .gph_distribution(object, eval_info$eval_data, data, positive_dist_fun)
+  ev <- eval_info$eval_data; mp <- as.numeric(base::mean(D$positive)); mm <- (1-D$prob_zero)*mp
+  out <- list()
+  for (g in eval_info$groups$.gph_group_id) {
+    ii <- which(ev$.gph_group_id == g); w <- ev$.gph_weight[ii]
+    rr <- eval_info$groups[eval_info$groups$.gph_group_id == g, , drop = FALSE]
+    vals <- c(prob_zero = stats::weighted.mean(D$prob_zero[ii], w),
+              positive_mean = stats::weighted.mean(mp[ii], w),
+              marginal_mean = stats::weighted.mean(mm[ii], w))
+    r2 <- rr[rep(1L, 3L), , drop = FALSE]; r2$component <- names(vals); r2$estimate <- as.numeric(vals)
+    out[[length(out)+1L]] <- r2
+  }
+  z <- do.call(rbind, out); rownames(z) <- NULL; .gph_relabel_groups(z)
+}
+
+#' Build standardized data for GAMLSS graphics
+#'
+#' @description Creates an auditable data layer before any ggplot is built. It
+#' supports parameter effects, marginal estimands, contrasts, full predictive
+#' distributions, marginal mixture quantiles, zero-adjusted decomposition,
+#' quantitative trends, derivatives, optima, and two-predictor surfaces.
+#'
+#' @param object Fitted GAMLSS model or a `gamlss_posthoc`/`gamlss_trend` object for compatible types.
+#' @param type Plot-data type: `parameters`, `estimand`, `contrasts`, `distribution`,
+#' `quantiles`, `zero_adjusted`, `trend`, `derivative`, `optimum`, or `surface`.
+#' @param x,y Predictor names. `y` is used only for surfaces.
+#' @param by Optional conditioning variables.
+#' @param parameter,parameters Distributional parameter(s).
+#' @param parameter_scale Parameter prediction scale, `response` or `link`.
+#' @param estimand,what Estimand and parameter passed to post-hoc/trend engines.
+#' @param at Named list of evaluation values.
+#' @param newdata Optional explicit prediction rows.
+#' @param population,weights Standardization population and weights.
+#' @param probs Quantile probabilities.
+#' @param curve Distribution curve type: density, CDF, or survival.
+#' @param response_grid Optional response grid for distribution curves.
+#' @param n Number of predictor grid points.
+#' @param n_response Number of response grid points.
+#' @param uncertainty,B Bootstrap/inference controls forwarded when relevant.
+#' @param positive_dist_fun Optional positive-distribution constructor for zero-adjusted models.
+#' @param data Optional original data.
+#' @param ... Additional arguments forwarded to the underlying post-hoc or trend function.
+#' @return A data frame with class `gamlss_plot_data`.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- gamlss_plot_data(fit, "parameters", x = "dose", parameters = c("mu", "sigma"), data = d, n = 12)
+#'   p2 <- gamlss_plot_data(fit, "distribution", x = "trt", curve = "density", data = d, n_response = 40)
+#'   p3 <- gamlss_plot_data(fit, "quantiles", x = "dose", probs = c(.1, .5, .9), data = d, n = 12)
+#' }
+gamlss_plot_data <- function(object, type = c("parameters", "estimand", "contrasts", "distribution",
+                                              "quantiles", "zero_adjusted", "trend", "derivative",
+                                              "optimum", "surface"),
+                             x = NULL, y = NULL, by = NULL, parameter = "mu", parameters = NULL,
+                             parameter_scale = c("response", "link"),
+                             estimand = "mean", what = "mu", at = list(), newdata = NULL,
+                             population = "observed", weights = NULL, probs = c(.05,.25,.5,.75,.95),
+                             curve = c("density","cdf","survival"), response_grid = NULL,
+                             n = 100L, n_response = 200L, uncertainty = "none", B = 199L,
+                             positive_dist_fun = NULL, data = NULL, ...) {
+  type <- match.arg(type); curve <- match.arg(curve); parameter_scale <- match.arg(parameter_scale)
+  if (inherits(object, "gamlss_posthoc") && type == "contrasts") {
+    z <- object$contrasts
+    if (is.null(z)) stop("The post-hoc object contains no contrasts.", call.=FALSE)
+    class(z) <- c("gamlss_plot_data", class(z)); attr(z,"plot_type") <- type; return(z)
+  }
+  if (inherits(object, "gamlss_trend") && type %in% c("trend","derivative","optimum")) {
+    z <- if (type == "optimum") object$special_points else object$values
+    class(z) <- c("gamlss_plot_data", class(z)); attr(z,"plot_type") <- type; return(z)
+  }
+  if (!.gph_is_gamlss(object)) stop("`object` must be a GAMLSS model or a compatible gamlssPosthoc result.", call.=FALSE)
+  data <- .gph_get_data(object, data)
+  if (type == "parameters") {
+    pars <- parameters %||% parameter
+    rows <- lapply(pars, function(p) {
+      if (!p %in% .gph_model_parameters(object)) return(NULL)
+      if (parameter_scale == "link") {
+        ei <- .gph_plot_eval(object, x=x, by=by, at=at, newdata=newdata,
+                             population=population, weights=weights, data=data, n=n)
+        z <- .gph_predict_parameter_standardized(object, ei, p, data=data, scale="link")
+        z <- .gph_relabel_groups(z)
+      } else if (!is.null(x) && is.numeric(data[[x]])) {
+        tr <- gamlss_trend(object, x=x, by=by, n=n, estimand="parameter", what=p,
+                           population=population, weights=weights, uncertainty=uncertainty,
+                           data=data, B=B)
+        z <- tr$values
+      } else {
+        z <- gamlss_posthoc(object, specs=x, by=by, estimand="parameter", what=p,
+                            population=population, weights=weights, at=at, contrast="none",
+                            uncertainty=uncertainty, data=data, B=B)$estimates
+      }
+      z$parameter <- p; z
+    })
+    z <- do.call(rbind, Filter(Negate(is.null), rows))
+  } else if (type == "estimand") {
+    if (!is.null(x) && is.numeric(data[[x]])) z <- gamlss_trend(object,x=x,by=by,n=n,estimand=estimand,what=what,
+        population=population,weights=weights,uncertainty=uncertainty,data=data,B=B,...)$values
+    else z <- gamlss_posthoc(object,specs=x,by=by,estimand=estimand,what=what,population=population,weights=weights,
+        at=at,contrast="none",uncertainty=uncertainty,data=data,B=B,...)$estimates
+  } else if (type == "contrasts") {
+    z <- gamlss_posthoc(object, specs=x, by=by, estimand=estimand, what=what, population=population,
+                        weights=weights, at=at, contrast="pairwise", uncertainty=uncertainty, data=data, B=B, ...)$contrasts
+  } else if (type %in% c("distribution","quantiles","zero_adjusted")) {
+    ei <- .gph_plot_eval(object,x,by,at,newdata,population,weights,data,n)
+    if (type == "distribution") z <- .gph_group_distribution_curve(object,ei,response_grid,curve,data,positive_dist_fun,n_response)
+    if (type == "quantiles") z <- .gph_group_quantiles(object,ei,probs,data,positive_dist_fun)
+    if (type == "zero_adjusted") z <- .gph_zero_components(object,ei,data,positive_dist_fun)
+  } else if (type %in% c("trend","derivative","optimum")) {
+    m <- switch(type, trend="curve", derivative="derivative", optimum="optimum")
+    tr <- gamlss_trend(object,x=x,by=by,n=n,method=m,estimand=estimand,what=what,population=population,
+                       weights=weights,uncertainty=uncertainty,data=data,B=B,...)
+    z <- if (type == "optimum") tr$special_points else tr$values
+  } else if (type == "surface") {
+    if (is.null(x) || is.null(y) || !all(c(x,y) %in% names(data))) stop("Surface plots require valid `x` and `y`.",call.=FALSE)
+    xv <- at[[x]] %||% .gph_numeric_grid(data,x,max(20L,round(sqrt(n*n))))
+    yv <- at[[y]] %||% .gph_numeric_grid(data,y,max(20L,round(sqrt(n*n))))
+    grid <- expand.grid(stats::setNames(list(xv,yv),c(x,y)), KEEP.OUT.ATTRS=FALSE, stringsAsFactors=FALSE)
+    grid <- .gph_restore_classes(grid,data)
+    grid$estimate <- .gph_predict_estimand(object,grid,estimand,what,data=data,positive_dist_fun=positive_dist_fun)
+    z <- grid
+  }
+  if (is.null(z) || !nrow(z)) stop("No plot data could be generated.", call.=FALSE)
+  class(z) <- c("gamlss_plot_data", setdiff(class(z),"gamlss_plot_data")); attr(z,"plot_type") <- type
+  z
+}
+
+
+# ===== plots.R =====
+
+# ggplot2 visualization layer -------------------------------------------------
+
+.gph_ggrequire <- function() .gph_require("ggplot2", "for visualization.")
+.gph_aes <- function(x=NULL,y=NULL,colour=NULL,fill=NULL,group=NULL) {
+  .gph_ggrequire()
+  args <- list()
+  if (!is.null(x)) args$x <- rlang::sym(x)
+  if (!is.null(y)) args$y <- rlang::sym(y)
+  if (!is.null(colour)) args$colour <- rlang::sym(colour)
+  if (!is.null(fill)) args$fill <- rlang::sym(fill)
+  if (!is.null(group)) args$group <- rlang::sym(group)
+  do.call(ggplot2::aes, lapply(args, rlang::new_quosure, env=parent.frame()))
+}
+
+.gph_first_group <- function(d, exclude=character()) {
+  cand <- setdiff(names(d), c(exclude,"estimate","SE","lower.CL","upper.CL","response","value","curve","prob","quantile","parameter","component","comparison","p.value","p.value.adjusted"))
+  cand[vapply(d[cand], function(z) is.factor(z)||is.character(z), logical(1))][1L] %||% NULL
+}
+
+#' Scientific theme for GAMLSS figures
+#' @param base_size Base font size.
+#' @param base_family Font family.
+#' @param grid Show major horizontal grid lines.
+#' @return A complete ggplot2 theme.
+#' @export
+#' @examples
+#' if (requireNamespace("ggplot2", quietly = TRUE)) {
+#'   p <- ggplot2::ggplot(mtcars, ggplot2::aes(wt, mpg)) + ggplot2::geom_point()
+#'   # theme_gamlss(): three typical uses
+#'   p + theme_gamlss()
+#'   p + theme_gamlss(base_size = 12)
+#'   p + theme_gamlss(grid = FALSE)
+#'   # journal variant
+#'   p + theme_gamlss_journal()
+#'   p + theme_gamlss_journal(base_size = 10)
+#'   p + theme_gamlss_journal(grid = TRUE)
+#'   # presentation variant
+#'   p + theme_gamlss_presentation()
+#'   p + theme_gamlss_presentation(base_size = 18)
+#'   p + theme_gamlss_presentation(grid = FALSE)
+#' }
+theme_gamlss <- function(base_size=11, base_family="", grid=TRUE) {
+  .gph_ggrequire()
+  ggplot2::theme_minimal(base_size=base_size, base_family=base_family) +
+    ggplot2::theme(panel.grid.minor=ggplot2::element_blank(),
+                   panel.grid.major.x=ggplot2::element_blank(),
+                   panel.grid.major.y=if (grid) ggplot2::element_line(linewidth=.25) else ggplot2::element_blank(),
+                   legend.position="right", plot.title.position="plot",
+                   strip.text=ggplot2::element_text(face="bold"),
+                   axis.title=ggplot2::element_text(face="bold"))
+}
+#' @rdname theme_gamlss
+#' @export
+theme_gamlss_journal <- function(base_size=9, base_family="", grid=FALSE) theme_gamlss(base_size,base_family,grid)+ggplot2::theme(legend.position="top")
+#' @rdname theme_gamlss
+#' @export
+theme_gamlss_presentation <- function(base_size=16, base_family="", grid=TRUE) theme_gamlss(base_size,base_family,grid)+ggplot2::theme(legend.position="bottom")
+
+#' Plot one or more GAMLSS distributional parameters
+#' @param object Fitted GAMLSS model.
+#' @param x Predictor shown on the horizontal axis.
+#' @param parameters Parameters to draw; `"all"` uses all detected parameters.
+#' @param by Optional grouping variable(s).
+#' @param n Grid size for numeric predictors.
+#' @param scale `response` or `link`. Link scale is obtained directly from the model's parameter predictor.
+#' @param uncertainty Inference layer passed to the data engine.
+#' @param data Original data.
+#' @param ... Additional arguments.
+#' @return A ggplot object.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_parameters(fit, "dose", parameters = c("mu", "sigma"), data = d, n = 12)
+#'   p2 <- plot_gamlss_parameters(fit, "dose", parameters = "mu", scale = "link", data = d, n = 12)
+#'   p3 <- plot_gamlss_parameters(fit, "trt", parameters = "all", data = d)
+#' }
+plot_gamlss_parameters <- function(object,x,parameters="all",by=NULL,n=100L,scale=c("response","link"),uncertainty="none",data=NULL,...) {
+  scale <- match.arg(scale)
+  pars <- if (identical(parameters,"all")) .gph_model_parameters(object) else parameters
+  d <- gamlss_plot_data(object,"parameters",x=x,by=by,parameters=pars,parameter_scale=scale,
+                        n=n,uncertainty=uncertainty,data=data,...)
+  num <- is.numeric(.gph_get_data(object,data)[[x]]); grp <- if(length(by)) by[1] else NULL
+  p <- ggplot2::ggplot(d,.gph_aes(x,"estimate",colour=grp,group=grp))
+  if (num) p <- p + ggplot2::geom_line(linewidth=.8) else p <- p + ggplot2::geom_point(size=2.3)
+  if (all(c("lower.CL","upper.CL")%in%names(d))) {
+    if (num) p <- p + ggplot2::geom_ribbon(ggplot2::aes(ymin=rlang::.data$lower.CL,ymax=rlang::.data$upper.CL,fill=if(!is.null(grp)) rlang::.data[[grp]] else NULL),alpha=.15,colour=NA)
+    else p <- p + ggplot2::geom_errorbar(ggplot2::aes(ymin=rlang::.data$lower.CL,ymax=rlang::.data$upper.CL),width=.08)
+  }
+  p + ggplot2::facet_wrap(~parameter,scales="free_y") + ggplot2::labs(x=x,y=NULL,title="Distributional parameters") + theme_gamlss()
+}
+
+#' Plot a declared GAMLSS estimand
+#' @param object Fitted model.
+#' @param x Predictor.
+#' @param estimand Target estimand.
+#' @param what Parameter when `estimand="parameter"`.
+#' @param by Optional grouping variable(s).
+#' @param n Numeric grid size.
+#' @param uncertainty Inference layer.
+#' @param data Original data.
+#' @param ... Additional arguments.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_estimand(fit, "trt", estimand = "mean", data = d)
+#'   p2 <- plot_gamlss_estimand(fit, "dose", estimand = "variance", data = d, n = 12)
+#'   p3 <- plot_gamlss_estimand(fit, "dose", estimand = "quantile", prob = .9, data = d, n = 12)
+#' }
+plot_gamlss_estimand <- function(object,x,estimand="mean",what="mu",by=NULL,n=100L,uncertainty="none",data=NULL,...) {
+  d <- gamlss_plot_data(object,"estimand",x=x,by=by,estimand=estimand,what=what,n=n,uncertainty=uncertainty,data=data,...)
+  num <- is.numeric(.gph_get_data(object,data)[[x]]); grp <- if(length(by)) by[1] else NULL
+  p <- ggplot2::ggplot(d,.gph_aes(x,"estimate",colour=grp,group=grp))
+  if (num) p <- p+ggplot2::geom_line(linewidth=.85) else p <- p+ggplot2::geom_point(size=2.4)
+  if (all(c("lower.CL","upper.CL")%in%names(d))) {
+    if(num) p <- p+ggplot2::geom_ribbon(ggplot2::aes(ymin=rlang::.data$lower.CL,ymax=rlang::.data$upper.CL,fill=if(!is.null(grp)) rlang::.data[[grp]] else NULL),alpha=.15,colour=NA)
+    else p <- p+ggplot2::geom_errorbar(ggplot2::aes(ymin=rlang::.data$lower.CL,ymax=rlang::.data$upper.CL),width=.08)
+  }
+  p+ggplot2::labs(x=x,y=estimand,title=paste("GAMLSS",estimand))+theme_gamlss()
+}
+
+#' Forest/estimation plot for post-hoc contrasts
+#' @param object `gamlss_posthoc` object or fitted model.
+#' @param x Focal factor when `object` is a model.
+#' @param null Optional null value; inferred from comparison when omitted.
+#' @param show_p Show adjusted p-values as labels when available.
+#' @param style `interval` for estimates and confidence intervals or `distribution` for retained bootstrap draws with optional `ggdist`.
+#' @param ... Arguments forwarded when a model is supplied.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   r1 <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise", uncertainty = "none", data = d)
+#'   p1 <- plot_gamlss_contrasts(r1)
+#'   r2 <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "reference", comparison = "percent_change", uncertainty = "none", data = d)
+#'   p2 <- plot_gamlss_contrasts(r2)
+#'   p3 <- plot_gamlss_contrasts(r1, show_p = FALSE, style = "interval")
+#' }
+plot_gamlss_contrasts <- function(object,x=NULL,null=NULL,show_p=FALSE,style=c("interval","distribution"),...) {
+  style <- match.arg(style)
+  z <- if(inherits(object,"gamlss_posthoc")) object else gamlss_posthoc(object,specs=x,contrast="pairwise",...)
+  d <- z$contrasts; if(is.null(d)||!nrow(d)) stop("No contrasts available.",call.=FALSE)
+  comp <- z$comparison %||% (d$comparison[1] %||% "difference"); if(is.null(null)) null <- .gph_comparison_null(comp)
+  d$.label <- d$contrast %||% seq_len(nrow(d))
+  draws <- attr(d, "draws")
+  if (style == "distribution" && !is.null(draws) && requireNamespace("ggdist", quietly = TRUE)) {
+    dl <- do.call(rbind, lapply(seq_len(ncol(draws)), function(j) data.frame(.label=d$.label[j], draw=draws[,j])))
+    p <- ggplot2::ggplot(dl, ggplot2::aes(x=rlang::.data$draw, y=rlang::.data$.label)) +
+      ggdist::stat_halfeye(.width=c(.5,.8,.95)) + ggplot2::geom_vline(xintercept=null,linetype=2)
+  } else {
+    if (style == "distribution" && (is.null(draws) || !requireNamespace("ggdist", quietly = TRUE))) warning("Distribution style requires retained draws and package 'ggdist'; using interval style.", call.=FALSE)
+    p <- ggplot2::ggplot(d,ggplot2::aes(x=rlang::.data$estimate,y=stats::reorder(rlang::.data$.label,rlang::.data$estimate)))+
+      ggplot2::geom_vline(xintercept=null,linetype=2)+ggplot2::geom_point(size=2.4)
+    if(all(c("lower.CL","upper.CL")%in%names(d))) p <- p+ggplot2::geom_errorbar(ggplot2::aes(xmin=rlang::.data$lower.CL,xmax=rlang::.data$upper.CL),orientation="y",width=.15)
+  }
+  if(show_p) { pc <- if("p.value.adjusted"%in%names(d)) "p.value.adjusted" else if("p.value"%in%names(d)) "p.value" else NULL; if(!is.null(pc)) { d$.ptxt <- paste0("p=",formatC(d[[pc]],digits=3,format="fg")); p <- p+ggplot2::geom_text(data=d,ggplot2::aes(label=rlang::.data$.ptxt),hjust=-.1,size=3) } }
+  p+ggplot2::labs(x=.gph_comparison_label(comp),y=NULL,title="Post-hoc contrasts")+theme_gamlss()
+}
+
+#' Plot standardized predictive distributions
+#' @param object Fitted model.
+#' @param x Grouping/predictor variable.
+#' @param by Optional conditioning variables.
+#' @param type Density, CDF, or survival curve.
+#' @param at,newdata,population,weights Prediction standardization controls.
+#' @param n,n_response Grid sizes.
+#' @param data Original data.
+#' @param ... Additional arguments.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_distribution(fit, "trt", type = "density", data = d, n_response = 40)
+#'   p2 <- plot_gamlss_distribution(fit, "trt", type = "cdf", data = d, n_response = 40)
+#'   p3 <- plot_gamlss_distribution(fit, "dose", at = list(dose = c(0, 60, 120)), type = "survival", data = d, n_response = 40)
+#' }
+plot_gamlss_distribution <- function(object,x,by=NULL,type=c("density","cdf","survival"),at=list(),newdata=NULL,population="observed",weights=NULL,n=100L,n_response=200L,data=NULL,...) {
+  type<-match.arg(type); d<-gamlss_plot_data(object,"distribution",x=x,by=by,curve=type,at=at,newdata=newdata,population=population,weights=weights,n=n,n_response=n_response,data=data,...)
+  gc <- if (".gph_label" %in% names(d)) ".gph_label" else .gph_first_group(d,exclude=c("response","value")); if(is.null(gc)&&x%in%names(d)) gc<-x
+  p<-ggplot2::ggplot(d,.gph_aes("response","value",colour=gc,group=gc))+ggplot2::geom_line(linewidth=.85)
+  if(.gph_is_zadj(object)&&"prob_zero"%in%names(d)&&type=="density") { spike<-unique(d[c(intersect(gc,names(d)),"prob_zero")]); if(nrow(spike)) p<-p+ggplot2::geom_segment(data=spike,ggplot2::aes(x=0,xend=0,y=0,yend=rlang::.data$prob_zero),inherit.aes=FALSE,linewidth=.8) }
+  p+ggplot2::labs(x="Response",y=type,title=paste("Predictive",type))+theme_gamlss()
+}
+
+#' Plot marginal predictive quantiles as lines or fan bands
+#' @param object Fitted model.
+#' @param x Predictor.
+#' @param probs Quantile probabilities.
+#' @param by Optional group.
+#' @param style `lines` or `fan`.
+#' @param n Grid size.
+#' @param data Original data.
+#' @param ... Additional arguments.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_quantiles(fit, "dose", style = "fan", data = d, n = 12)
+#'   p2 <- plot_gamlss_quantiles(fit, "dose", probs = c(.1, .5, .9), style = "lines", data = d, n = 12)
+#'   p3 <- plot_gamlss_quantiles(fit, "dose", by = "trt", style = "fan", data = d, n = 12)
+#' }
+plot_gamlss_quantiles <- function(object,x,probs=c(.05,.1,.25,.5,.75,.9,.95),by=NULL,style=c("fan","lines"),n=100L,data=NULL,...) {
+  style<-match.arg(style); d<-gamlss_plot_data(object,"quantiles",x=x,by=by,probs=sort(unique(probs)),n=n,data=data,...)
+  grp<-if(length(by)) by[1] else NULL
+  if(style=="lines") return(ggplot2::ggplot(d,.gph_aes(x,"quantile",colour=grp,group=grp))+ggplot2::geom_line(ggplot2::aes(linetype=factor(rlang::.data$prob)),linewidth=.75)+ggplot2::labs(x=x,y="Quantile",linetype="p",title="Predictive quantiles")+theme_gamlss())
+  # Build symmetric intervals around median when matching probabilities exist.
+  lower<-sort(probs[probs<.5]); upper<-sort(probs[probs>.5],decreasing=TRUE); k<-min(length(lower),length(upper)); if(k<1L) stop("Fan style requires probabilities below and above 0.5.",call.=FALSE)
+  med<-d[which.min(abs(d$prob-.5)),,drop=FALSE]; bands<-list()
+  keys<-setdiff(names(d),c("prob","quantile")); basekeys<-keys
+  for(i in seq_len(k)) { lo<-d[abs(d$prob-lower[i])<1e-12,,drop=FALSE]; hi<-d[abs(d$prob-upper[i])<1e-12,,drop=FALSE]; m<-merge(lo,hi,by=basekeys,suffixes=c(".lo",".hi")); m$.width<-upper[i]-lower[i]; bands[[i]]<-m }
+  b<-do.call(rbind,bands); p<-ggplot2::ggplot()
+  if(nrow(b)) p<-p+ggplot2::geom_ribbon(data=b,ggplot2::aes(x=rlang::.data[[x]],ymin=rlang::.data$quantile.lo,ymax=rlang::.data$quantile.hi,group=if(!is.null(grp)) interaction(rlang::.data[[grp]],rlang::.data$.width) else rlang::.data$.width,fill=factor(rlang::.data$.width)),alpha=.18,colour=NA)
+  medall<-d[abs(d$prob-.5)==min(abs(d$prob-.5)),,drop=FALSE]; p+ggplot2::geom_line(data=medall,.gph_aes(x,"quantile",colour=grp,group=grp),linewidth=.9)+ggplot2::labs(x=x,y="Response quantiles",fill="Central width",title="Predictive quantile fan")+theme_gamlss()
+}
+
+#' Decompose zero-adjusted predictions
+#' @param object Fitted `gamlssZadj` model.
+#' @param x Predictor/group.
+#' @param by Optional conditioning variables.
+#' @param style `facets` or `normalized`.
+#' @param n Grid size.
+#' @param data Original data.
+#' @param ... Additional arguments.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("gamlss.inf", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(312)
+#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 45)), dose = rep(seq(0, 80, length.out = 9), 10))
+#'   mu <- exp(0.2 + 0.012*d$dose + 0.25*(d$trt == "B"))
+#'   h <- plogis(0.2 - 0.7*(d$trt == "B") - 0.01*d$dose)
+#'   yp <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = 0.35)
+#'   d$y <- ifelse(stats::rbinom(nrow(d), 1, h) == 1, 0, yp)
+#'   fit <- gamlss.inf::gamlssZadj(y = y, mu.formula = ~ trt + dose,
+#'                                 sigma.formula = ~ 1,
+#'                                 xi0.formula = ~ trt + dose,
+#'                                 family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_zero_adjusted(fit, "trt", data = d)
+#'   p2 <- plot_gamlss_zero_adjusted(fit, "dose", style = "facets", data = d, n = 12)
+#'   p3 <- plot_gamlss_zero_adjusted(fit, "dose", by = "trt", style = "normalized", data = d, n = 12)
+#' }
+plot_gamlss_zero_adjusted <- function(object,x,by=NULL,style=c("facets","normalized"),n=100L,data=NULL,...) {
+  style<-match.arg(style); d<-gamlss_plot_data(object,"zero_adjusted",x=x,by=by,n=n,data=data,...); grp<-if(length(by)) by[1] else NULL
+  if(style=="normalized") d$plot_value<-ave(d$estimate,d$component,FUN=function(z) z/max(abs(z),na.rm=TRUE)) else d$plot_value<-d$estimate
+  num<-is.numeric(.gph_get_data(object,data)[[x]]); p<-ggplot2::ggplot(d,.gph_aes(x,"plot_value",colour=grp,group=grp))
+  if(num) p<-p+ggplot2::geom_line(linewidth=.85) else p<-p+ggplot2::geom_point(size=2.3)
+  p+ggplot2::facet_wrap(~component,scales=if(style=="facets")"free_y" else "fixed")+ggplot2::labs(x=x,y=if(style=="normalized")"Normalized value" else "Estimate",title="Zero-adjusted decomposition")+theme_gamlss()
+}
+
+#' Plot a quantitative GAMLSS trend with confidence bands
+#' @param object Fitted model or `gamlss_trend` object.
+#' @param x Predictor when a model is supplied.
+#' @param by Optional group.
+#' @param band Pointwise or simultaneous band when available.
+#' @param intervals Optional interval widths for ggdist draws when retained.
+#' @param data Original data.
+#' @param ... Arguments to `gamlss_trend()`.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_trend(fit, "dose", data = d, n = 15)
+#'   p2 <- plot_gamlss_trend(fit, "dose", by = "trt", data = d, n = 15)
+#'   tr <- gamlss_trend(fit, "dose", n = 15, uncertainty = "none", data = d)
+#'   p3 <- plot_gamlss_trend(tr)
+#' }
+plot_gamlss_trend <- function(object,x=NULL,by=NULL,band=c("pointwise","simultaneous"),intervals=c(.5,.8,.95),data=NULL,...) {
+  band<-match.arg(band); tr<-if(inherits(object,"gamlss_trend")) object else gamlss_trend(object,x=x,by=by,method="curve",band=band,data=data,...); d<-tr$values; x<-tr$x; grp<-if(length(tr$by)) tr$by[1] else NULL
+  draws <- tr$source$draws %||% NULL
+  if (!is.null(draws) && requireNamespace("ggdist", quietly=TRUE) && nrow(draws) > 1L) {
+    dl <- do.call(rbind, lapply(seq_len(nrow(draws)), function(i) { z <- d; z$.draw <- i; z$.value <- as.numeric(draws[i,]); z }))
+    p <- ggplot2::ggplot(dl, .gph_aes(x, ".value", colour=grp, group=grp)) +
+      ggdist::stat_lineribbon(ggplot2::aes(group=if(!is.null(grp)) rlang::.data[[grp]] else 1), .width=intervals, alpha=.15)
+  } else p<-ggplot2::ggplot(d,.gph_aes(x,"estimate",colour=grp,group=grp))
+  lo<-if(band=="simultaneous"&&"simultaneous_lower"%in%names(d))"simultaneous_lower" else if("lower.CL"%in%names(d))"lower.CL" else NULL
+  hi<-if(band=="simultaneous"&&"simultaneous_upper"%in%names(d))"simultaneous_upper" else if("upper.CL"%in%names(d))"upper.CL" else NULL
+  if (is.null(draws) || !requireNamespace("ggdist", quietly=TRUE)) {
+    if(!is.null(lo)&&!is.null(hi)) p<-p+ggplot2::geom_ribbon(ggplot2::aes(ymin=rlang::.data[[lo]],ymax=rlang::.data[[hi]],fill=if(!is.null(grp)) rlang::.data[[grp]] else NULL),alpha=.16,colour=NA)
+    p<-p+ggplot2::geom_line(linewidth=.9)
+  }
+  p+ggplot2::labs(x=x,y=tr$estimand,title="GAMLSS trend")+theme_gamlss()
+}
+
+#' Plot first or second derivative of a GAMLSS trend
+#' @param object Fitted model or derivative `gamlss_trend` object.
+#' @param x Predictor when model supplied.
+#' @param order Derivative order, 1 or 2.
+#' @param by Optional group.
+#' @param data Original data.
+#' @param ... Arguments to `gamlss_trend()`.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_derivative(fit, "dose", order = 1, data = d, n = 15)
+#'   p2 <- plot_gamlss_derivative(fit, "dose", order = 2, data = d, n = 15)
+#'   p3 <- plot_gamlss_derivative(fit, "dose", order = 1, by = "trt", data = d, n = 15)
+#' }
+plot_gamlss_derivative <- function(object,x=NULL,order=1L,by=NULL,data=NULL,...) {
+  tr<-if(inherits(object,"gamlss_trend")) object else gamlss_trend(object,x=x,by=by,method="derivative",derivative_order=order,data=data,...); d<-tr$values; x<-tr$x; ycol<-paste0("derivative",order); grp<-if(length(tr$by)) tr$by[1] else NULL
+  p<-ggplot2::ggplot(d,.gph_aes(x,ycol,colour=grp,group=grp))+ggplot2::geom_hline(yintercept=0,linetype=2)
+  lo<-paste0(ycol,"_lower"); hi<-paste0(ycol,"_upper"); if(all(c(lo,hi)%in%names(d))) p<-p+ggplot2::geom_ribbon(ggplot2::aes(ymin=rlang::.data[[lo]],ymax=rlang::.data[[hi]],fill=if(!is.null(grp)) rlang::.data[[grp]] else NULL),alpha=.16,colour=NA)
+  p+ggplot2::geom_line(linewidth=.85)+ggplot2::labs(x=x,y=paste0("d",order,"/d",x,order),title=paste("Derivative",order))+theme_gamlss()
+}
+
+#' Plot a maximum or minimum and its uncertainty
+#' @param object Fitted model or optimum `gamlss_trend` object.
+#' @param x Predictor when model supplied.
+#' @param optimum Maximum or minimum.
+#' @param by Optional group.
+#' @param show_distribution If bootstrap optimum draws are available, use them in a distributional display.
+#' @param data Original data.
+#' @param ... Arguments to `gamlss_trend()`.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_optimum(fit, "dose", optimum = "maximum", show_distribution = FALSE, data = d, n = 21)
+#'   p2 <- plot_gamlss_optimum(fit, "dose", optimum = "minimum", show_distribution = FALSE, data = d, n = 21)
+#'   p3 <- plot_gamlss_optimum(fit, "dose", by = "trt", optimum = "maximum", show_distribution = FALSE, data = d, n = 21)
+#' }
+plot_gamlss_optimum <- function(object,x=NULL,optimum=c("maximum","minimum"),by=NULL,show_distribution=TRUE,data=NULL,...) {
+  optimum<-match.arg(optimum); tr<-if(inherits(object,"gamlss_trend")) object else gamlss_trend(object,x=x,by=by,method="optimum",optimum=optimum,data=data,...); d<-tr$special_points; if(is.null(d)||!nrow(d)) stop("No optimum detected.",call.=FALSE); x<-tr$x; grp<-if(length(tr$by)) tr$by[1] else NULL
+  d$.grp<-if(!is.null(grp)) as.character(d[[grp]]) else "All"
+  odraws <- attr(d, "optimum_draws")
+  if (isTRUE(show_distribution) && !is.null(odraws) && requireNamespace("ggdist", quietly=TRUE)) {
+    dl <- do.call(rbind, lapply(seq_along(odraws), function(j) data.frame(.grp=d$.grp[j], location=as.numeric(odraws[[j]]))))
+    p <- ggplot2::ggplot(dl, ggplot2::aes(x=rlang::.data$location,y=rlang::.data$.grp)) +
+      ggdist::stat_halfeye(.width=c(.5,.8,.95))
+  } else {
+    if (isTRUE(show_distribution) && !is.null(odraws) && !requireNamespace("ggdist", quietly=TRUE))
+      warning("Package 'ggdist' is not installed; showing interval representation.", call.=FALSE)
+    p<-ggplot2::ggplot(d,ggplot2::aes(x=rlang::.data[[x]],y=rlang::.data$.grp))+ggplot2::geom_point(size=2.5)
+    if(all(c("x_lower","x_upper")%in%names(d))) p<-p+ggplot2::geom_errorbar(ggplot2::aes(xmin=rlang::.data$x_lower,xmax=rlang::.data$x_upper),orientation="y",width=.15)
+  }
+  p+ggplot2::labs(x=paste("Location of",optimum),y=NULL,title=paste("Estimated",optimum))+theme_gamlss()
+}
+
+#' Plot a two-predictor estimand surface
+#' @param object Fitted model.
+#' @param x,y Numeric predictors.
+#' @param estimand,what Target estimand.
+#' @param type Heatmap, contour, or both.
+#' @param n Approximate grid density.
+#' @param data Original data.
+#' @param ... Additional arguments.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(311)
+#'   d <- expand.grid(dose = seq(0, 100, length.out = 8), salinity = seq(0, 3, length.out = 6))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = exp(0.5 + 0.01*d$dose - 0.18*d$salinity), sigma = 0.25)
+#'   fit <- gamlss::gamlss(y ~ dose * salinity, family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_surface(fit, "dose", "salinity", type = "heatmap", data = d, n = 16)
+#'   p2 <- plot_gamlss_surface(fit, "dose", "salinity", type = "contour", data = d, n = 16)
+#'   p3 <- plot_gamlss_surface(fit, "dose", "salinity", estimand = "variance", type = "both", data = d, n = 16)
+#' }
+plot_gamlss_surface <- function(object,x,y,estimand="mean",what="mu",type=c("heatmap","contour","both"),n=45L,data=NULL,...) {
+  type<-match.arg(type); d<-gamlss_plot_data(object,"surface",x=x,y=y,estimand=estimand,what=what,n=n,data=data,...); p<-ggplot2::ggplot(d,ggplot2::aes(x=rlang::.data[[x]],y=rlang::.data[[y]]))
+  if(type%in%c("heatmap","both")) p<-p+ggplot2::geom_raster(ggplot2::aes(fill=rlang::.data$estimate),interpolate=TRUE)
+  if(type%in%c("contour","both")) p<-p+ggplot2::geom_contour(ggplot2::aes(z=rlang::.data$estimate),colour="black",linewidth=.35)
+  p+ggplot2::labs(x=x,y=y,fill=estimand,title="GAMLSS estimand surface")+theme_gamlss()
+}
+
+#' Plot observations with a GAMLSS central curve and predictive quantiles
+#' @param object Fitted model.
+#' @param x Predictor.
+#' @param response Optional response name; inferred from model when omitted.
+#' @param by Optional group.
+#' @param probs Lower, median, upper predictive probabilities.
+#' @param n Grid size.
+#' @param jitter Jitter observations when x is discrete.
+#' @param data Original data.
+#' @param ... Additional arguments.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_fit(fit, "dose", response = "y", data = d, n = 15)
+#'   p2 <- plot_gamlss_fit(fit, "dose", response = "y", by = "trt", data = d, n = 15)
+#'   p3 <- plot_gamlss_fit(fit, "trt", response = "y", jitter = TRUE, data = d)
+#' }
+plot_gamlss_fit <- function(object,x,response=NULL,by=NULL,probs=c(.05,.5,.95),n=100L,jitter=FALSE,data=NULL,...) {
+  data<-.gph_get_data(object,data); if(is.null(response)) { f<-.gph_get_formula(object,.gph_model_parameters(object)[1]); response<-all.vars(f)[1] }
+  q<-gamlss_plot_data(object,"quantiles",x=x,by=by,probs=probs,n=n,data=data,...); medp<-probs[which.min(abs(probs-.5))]; med<-q[abs(q$prob-medp)<1e-10,,drop=FALSE]; lo<-q[abs(q$prob-min(probs))<1e-10,,drop=FALSE]; hi<-q[abs(q$prob-max(probs))<1e-10,,drop=FALSE]; keys<-setdiff(names(q),c("prob","quantile")); band<-merge(lo,hi,by=keys,suffixes=c(".lo",".hi")); grp<-if(length(by)) by[1] else NULL
+  p<-ggplot2::ggplot(data,.gph_aes(x,response,colour=grp)); p<-if(jitter) p+ggplot2::geom_jitter(alpha=.35,width=.08,height=0) else p+ggplot2::geom_point(alpha=.35)
+  if(is.numeric(data[[x]])) {
+    p<-p+ggplot2::geom_ribbon(data=band,ggplot2::aes(x=rlang::.data[[x]],ymin=rlang::.data$quantile.lo,ymax=rlang::.data$quantile.hi,fill=if(!is.null(grp)) rlang::.data[[grp]] else NULL,group=if(!is.null(grp)) rlang::.data[[grp]] else 1),inherit.aes=FALSE,alpha=.12)+ggplot2::geom_line(data=med,.gph_aes(x,"quantile",colour=grp,group=grp),linewidth=.9)
+  } else {
+    # For discrete predictors, show predictive median and interval at each level.
+    p<-p+ggplot2::geom_errorbar(data=band,ggplot2::aes(x=rlang::.data[[x]],ymin=rlang::.data$quantile.lo,ymax=rlang::.data$quantile.hi,colour=if(!is.null(grp)) rlang::.data[[grp]] else NULL),inherit.aes=FALSE,width=.12)+
+      ggplot2::geom_point(data=med,ggplot2::aes(x=rlang::.data[[x]],y=rlang::.data$quantile,colour=if(!is.null(grp)) rlang::.data[[grp]] else NULL),inherit.aes=FALSE,size=2.5)
+  }
+  p+ggplot2::labs(x=x,y=response,title="Observed data and predictive distribution")+theme_gamlss()
+}
+
+#' GAMLSS diagnostics in ggplot2
+#' @param object Fitted model.
+#' @param type One of residual_fitted, qq, worm, density, pit, rootogram, or all.
+#' @param bins Number of bins.
+#' @param nsim Simulations for rootogram.
+#' @param engine Diagnostic engine; currently `native`, implemented with public `ggplot2` APIs.
+#' @param data Original data.
+#' @return A ggplot, a patchwork object when available, or a named list of plots for `type="all"`.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_diagnostics(fit, "qq", engine = "native", data = d)
+#'   p2 <- plot_gamlss_diagnostics(fit, "worm", engine = "native", data = d)
+#'   p3 <- plot_gamlss_diagnostics(fit, "density", engine = "native", data = d)
+#' }
+plot_gamlss_diagnostics <- function(object,type=c("residual_fitted","qq","worm","density","pit","rootogram","all"),bins=20L,nsim=100L,engine=c("native"),data=NULL) {
+  type<-match.arg(type); engine<-match.arg(engine); .gph_ggrequire(); data<-.gph_get_data(object,data)
+  r<-try(stats::residuals(object,type="z-scores"),silent=TRUE); if(inherits(r,"try-error")) r<-stats::residuals(object); r<-as.numeric(r); fitted<-try(stats::fitted(object),silent=TRUE); if(inherits(fitted,"try-error")) fitted<-seq_along(r); fitted<-as.numeric(fitted)
+  one<-function(tp){
+    if(tp=="residual_fitted") return(ggplot2::ggplot(data.frame(fitted=fitted,resid=r),ggplot2::aes(rlang::.data$fitted,rlang::.data$resid))+ggplot2::geom_hline(yintercept=0,linetype=2)+ggplot2::geom_point(alpha=.5)+ggplot2::geom_smooth(se=FALSE,method="loess",formula=y~x)+ggplot2::labs(x="Fitted",y="Quantile residual",title="Residuals vs fitted")+theme_gamlss())
+    if(tp=="qq") { n<-sum(is.finite(r)); d<-data.frame(theoretical=stats::qnorm(stats::ppoints(n)),sample=sort(r[is.finite(r)])); return(ggplot2::ggplot(d,ggplot2::aes(rlang::.data$theoretical,rlang::.data$sample))+ggplot2::geom_abline(slope=1,intercept=0,linetype=2)+ggplot2::geom_point()+ggplot2::labs(x="Normal quantile",y="Residual quantile",title="QQ plot")+theme_gamlss()) }
+    if(tp=="worm") { n<-sum(is.finite(r)); theo<-stats::qnorm(stats::ppoints(n)); samp<-sort(r[is.finite(r)]); d<-data.frame(theoretical=theo,deviation=samp-theo); return(ggplot2::ggplot(d,ggplot2::aes(rlang::.data$theoretical,rlang::.data$deviation))+ggplot2::geom_hline(yintercept=0,linetype=2)+ggplot2::geom_point(alpha=.5)+ggplot2::geom_smooth(se=FALSE,formula=y~stats::poly(x,2),method="lm")+ggplot2::labs(x="Normal quantile",y="Detrended residual",title="Worm-style detrended QQ")+theme_gamlss()) }
+    if(tp=="density") return(ggplot2::ggplot(data.frame(resid=r),ggplot2::aes(rlang::.data$resid))+ggplot2::geom_density()+ggplot2::stat_function(fun=stats::dnorm,linetype=2)+ggplot2::labs(x="Quantile residual",y="Density",title="Residual density")+theme_gamlss())
+    if(tp=="pit") { u<-stats::pnorm(r); return(ggplot2::ggplot(data.frame(pit=u),ggplot2::aes(rlang::.data$pit))+ggplot2::geom_histogram(bins=bins,boundary=0)+ggplot2::geom_hline(yintercept=length(u)/bins,linetype=2)+ggplot2::labs(x="PIT from quantile residual",y="Count",title="PIT histogram")+theme_gamlss()) }
+    # rootogram for integer responses via simulation
+    resp<-all.vars(.gph_get_formula(object,.gph_model_parameters(object)[1]))[1]; yobs<-data[[resp]]; if(!is.numeric(yobs)||any(abs(yobs-round(yobs))>1e-8,na.rm=TRUE)) stop("Rootogram is intended for discrete/integer responses.",call.=FALSE)
+    sims<-replicate(as.integer(nsim),.gph_simulate_response(object,data)); br<-seq(min(yobs,na.rm=TRUE),max(yobs,na.rm=TRUE)); obs<-tabulate(match(yobs,br),nbins=length(br)); expc<-rowMeans(vapply(seq_len(ncol(sims)),function(j)tabulate(match(round(sims[,j]),br),nbins=length(br)),numeric(length(br)))); dd<-data.frame(value=br,observed=sqrt(obs),expected=sqrt(expc),diff=sqrt(obs)-sqrt(expc)); ggplot2::ggplot(dd,ggplot2::aes(rlang::.data$value,rlang::.data$diff))+ggplot2::geom_hline(yintercept=0)+ggplot2::geom_col()+ggplot2::labs(x=resp,y="sqrt(observed)-sqrt(expected)",title="Hanging rootogram")+theme_gamlss()
+  }
+  if(type!="all") return(one(type)); types<-c("residual_fitted","qq","worm","density","pit"); ps<-stats::setNames(lapply(types,one),types); if(requireNamespace("patchwork",quietly=TRUE)) return(Reduce(`+`,ps)+patchwork::plot_layout(ncol=2)); ps
+}
+
+#' Compare fitted GAMLSS models graphically
+#' @param ... Named fitted GAMLSS models.
+#' @param type `criteria` or `estimand`.
+#' @param criterion Criterion drawn when `type='criteria'`: `AIC`, `global_deviance`, `df`, or `all`.
+#' @param x Predictor for estimand comparison.
+#' @param estimand,what Target estimand.
+#' @param data Optional original data.
+#' @return ggplot.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   fit2 <- gamlss::gamlss(y ~ trt + dose, family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   p1 <- plot_gamlss_compare(quadratic = fit, linear = fit2, type = "criteria")
+#'   p2 <- plot_gamlss_compare(quadratic = fit, linear = fit2, type = "estimand", x = "dose", data = d)
+#'   p3 <- plot_gamlss_compare(quadratic = fit, linear = fit2, type = "estimand", x = "dose", estimand = "variance", data = d)
+#' }
+plot_gamlss_compare <- function(...,type=c("criteria","estimand"),criterion=c("AIC","global_deviance","df","all"),x=NULL,estimand="mean",what="mu",data=NULL) {
+  type<-match.arg(type); criterion<-match.arg(criterion); mods<-list(...); if(!length(mods)) stop("Supply fitted models.",call.=FALSE); nm<-names(mods); if(is.null(nm)||any(!nzchar(nm))) nm<-paste0("Model",seq_along(mods))
+  if(type=="criteria") {
+    d<-do.call(rbind,lapply(seq_along(mods),function(i){m<-mods[[i]]; data.frame(model=nm[i],AIC=tryCatch(stats::AIC(m),error=function(e)NA_real_),global_deviance=m$G.deviance%||%NA_real_,df=m$df.fit%||%NA_real_)}))
+    if (criterion == "all") {
+      long<-do.call(rbind,lapply(c("AIC","global_deviance","df"),function(z)data.frame(model=d$model,criterion=z,value=d[[z]])))
+      return(ggplot2::ggplot(long,ggplot2::aes(rlang::.data$model,rlang::.data$value))+ggplot2::geom_col()+ggplot2::facet_wrap(~criterion,scales="free_y")+ggplot2::labs(x=NULL,y=NULL,title="Model comparison")+theme_gamlss())
+    }
+    return(ggplot2::ggplot(d,ggplot2::aes(x=rlang::.data$model,y=rlang::.data[[criterion]]))+ggplot2::geom_col()+ggplot2::labs(x=NULL,y=criterion,title="Model comparison")+theme_gamlss())
+  }
+  if(is.null(x)) stop("`x` is required for estimand comparison.",call.=FALSE); rows<-lapply(seq_along(mods),function(i){z<-gamlss_plot_data(mods[[i]],"estimand",x=x,estimand=estimand,what=what,data=data);z$model<-nm[i];z}); d<-do.call(rbind,rows); ggplot2::ggplot(d,ggplot2::aes(x=rlang::.data[[x]],y=rlang::.data$estimate,colour=rlang::.data$model,group=rlang::.data$model))+ggplot2::geom_line(linewidth=.85)+ggplot2::labs(x=x,y=estimand,title="Model estimand comparison")+theme_gamlss()
+}
+
+# S3 plot/autoplot ------------------------------------------------------------
+#' Plot and autoplot methods for gamlssPosthoc result classes
+#'
+#' @description `plot()` prints and invisibly returns the corresponding
+#' `ggplot2::autoplot()` result. `autoplot()` returns a complete, modifiable
+#' `ggplot` object for post-hoc, trend, distribution-summary, and diagnostic-plan
+#' objects owned by this package.
+#' @name autoplot.gamlssPosthoc
+#' @aliases plot.gamlss_posthoc plot.gamlss_trend
+#'   plot.gamlss_distribution_summary plot.gamlss_posthoc_plan
+#'   autoplot.gamlss_posthoc autoplot.gamlss_trend
+#'   autoplot.gamlss_distribution_summary autoplot.gamlss_posthoc_plan
+#' @param x Result object for `plot()` methods.
+#' @param object Result object for `autoplot()` methods.
+#' @param ... Additional graphical arguments forwarded to the specialized
+#'   constructor when supported.
+#' @param x_axis Optional predictor used as horizontal axis for a distribution
+#'   summary; use the method argument `x` in direct calls.
+#' @return `autoplot()` returns a `ggplot`; `plot()` prints it and returns it invisibly.
+#' @examples
+#' if (requireNamespace("gamlss", quietly=TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly=TRUE) &&
+#'     requireNamespace("distributions3", quietly=TRUE)) {
+#'   set.seed(331)
+#'   d <- data.frame(dose=rep(seq(0,100,length.out=8),each=6),
+#'                   trt=factor(rep(c("A","B"),length.out=48)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu=exp(.4+.01*d$dose+.15*(d$trt=="B")), sigma=.22)
+#'   fit <- gamlss::gamlss(y~trt+dose, family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   ph <- gamlss_posthoc(fit,"trt",estimand="mean",contrast="pairwise",
+#'                        uncertainty="none",data=d)
+#'   tr <- gamlss_trend(fit,"dose",n=15,uncertainty="none",data=d)
+#'   ds <- gamlss_distribution_summary(fit,
+#'     data.frame(dose=c(25,75),trt=factor(c("A","B"),levels=levels(d$trt))),data=d)
+#'   ggplot2::autoplot(ph)
+#'   ggplot2::autoplot(tr)
+#'   ggplot2::autoplot(ds, x="dose")
+#' }
+NULL
+
+#' @export
+plot.gamlss_posthoc <- function(x,...) { p<-ggplot2::autoplot(x,...); print(p); invisible(p) }
+#' @export
+plot.gamlss_trend <- function(x,...) { p<-ggplot2::autoplot(x,...); print(p); invisible(p) }
+
+#' @export
+plot.gamlss_distribution_summary <- function(x, ...) { p <- ggplot2::autoplot(x, ...); print(p); invisible(p) }
+#' @export
+plot.gamlss_posthoc_plan <- function(x, ...) { p <- ggplot2::autoplot(x, ...); print(p); invisible(p) }
+#' @export
+autoplot.gamlss_posthoc <- function(object,...) { if(!is.null(object$contrasts)) plot_gamlss_contrasts(object,...) else { d<-object$estimates; x<-object$specs[1]; p<-ggplot2::ggplot(d,.gph_aes(x,"estimate"))+ggplot2::geom_point(size=2.3); if(all(c("lower.CL","upper.CL")%in%names(d)))p<-p+ggplot2::geom_errorbar(ggplot2::aes(ymin=rlang::.data$lower.CL,ymax=rlang::.data$upper.CL),width=.08); p+ggplot2::labs(x=x,y=object$estimand_info$target[1],title="GAMLSS post-hoc estimates")+theme_gamlss() } }
+#' @export
+autoplot.gamlss_trend <- function(object,...) { if(grepl("derivative",object$method)) plot_gamlss_derivative(object,...) else if(object$method=="optimum") plot_gamlss_optimum(object,...) else plot_gamlss_trend(object,...) }
+#' @export
+autoplot.gamlss_distribution_summary <- function(object,x=NULL,...) { d<-as.data.frame(object); if(is.null(x)) x<-names(d)[1]; qcols<-grep("^q",names(d),value=TRUE); long<-do.call(rbind,lapply(qcols,function(q)data.frame(d[x],stat=q,value=d[[q]]))); ggplot2::ggplot(long,ggplot2::aes(x=rlang::.data[[x]],y=rlang::.data$value,colour=rlang::.data$stat,group=rlang::.data$stat))+ggplot2::geom_line()+ggplot2::geom_point()+ggplot2::labs(x=x,y="Value",title="Distribution summary")+theme_gamlss() }
+#' @export
+autoplot.gamlss_posthoc_plan <- function(object,...) { d<-object$parameter_capabilities; if(is.null(d)||!nrow(d))stop("No parameter capability table.",call.=FALSE); cols<-intersect(c("emmeans","marginaleffects","distribution"),names(d)); long<-do.call(rbind,lapply(cols,function(z)data.frame(parameter=d$parameter,engine=z,available=as.logical(d[[z]])))); ggplot2::ggplot(long,ggplot2::aes(x=rlang::.data$engine,y=rlang::.data$parameter,fill=rlang::.data$available))+ggplot2::geom_tile()+ggplot2::labs(x=NULL,y=NULL,title="Post-hoc engine capability")+theme_gamlss() }
+
+
+# ===== tidy_methods.R =====
+
+# Interoperability -----------------------------------------------------------
+
+#' Tidy a gamlssPosthoc result
+#' @param x A `gamlss_posthoc` object.
+#' @param component `estimates` or `contrasts`.
+#' @param conf.int Keep confidence intervals when present.
+#' @param ... Unused.
+#' @return A tidy data frame.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(330)
+#'   d <- data.frame(trt=factor(rep(c("A","B"), each=20)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu=ifelse(d$trt=="A",2,2.7), sigma=.22)
+#'   fit <- gamlss::gamlss(y~trt, family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   result <- gamlss_posthoc(fit,"trt",estimand="mean",contrast="pairwise",
+#'                            uncertainty="none",data=d)
+#'   generics::tidy(result)
+#'   generics::tidy(result, component="contrasts")
+#'   generics::tidy(result, conf.int=FALSE)
+#' }
+tidy.gamlss_posthoc <- function(x,component=c("estimates","contrasts"),conf.int=TRUE,...) {
+  component<-match.arg(component); d<-if(component=="estimates")x$estimates else x$contrasts
+  if(is.null(d))return(data.frame()); d<-as.data.frame(d)
+  if(!conf.int)d<-d[,setdiff(names(d),c("lower.CL","upper.CL")),drop=FALSE]
+  attr(d,"estimand")<-x$estimand; attr(d,"component")<-component; d
+}
+
+#' Glance at a gamlssPosthoc result
+#' @param x A `gamlss_posthoc` object.
+#' @param ... Unused.
+#' @return One-row data frame.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(330)
+#'   d <- data.frame(trt=factor(rep(c("A","B"), each=20)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu=ifelse(d$trt=="A",2,2.7), sigma=.22)
+#'   fit <- gamlss::gamlss(y~trt, family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   result <- gamlss_posthoc(fit,"trt",estimand="mean",contrast="pairwise",
+#'                            uncertainty="none",data=d)
+#'   generics::glance(result)
+#'   as.data.frame(generics::glance(result))
+#'   generics::glance(result)[, c("engine","estimand")]
+#' }
+glance.gamlss_posthoc <- function(x,...) data.frame(engine=x$engine,estimand=x$estimand,population=x$population,weighting=x$weighting,uncertainty=x$uncertainty_method,n_estimates=nrow(x$estimates),n_contrasts=if(is.null(x$contrasts))0L else nrow(x$contrasts),stringsAsFactors=FALSE)
+
+#' Augment data with row-level fitted estimands
+#' @param x A `gamlss_posthoc` object.
+#' @param data Optional data; defaults to data retained by the result.
+#' @param ... Unused.
+#' @return Original data plus `.fitted_estimand` and, when possible, `.resid`.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(330)
+#'   d <- data.frame(trt=factor(rep(c("A","B"), each=20)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu=ifelse(d$trt=="A",2,2.7), sigma=.22)
+#'   fit <- gamlss::gamlss(y~trt, family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   result <- gamlss_posthoc(fit,"trt",estimand="mean",contrast="pairwise",
+#'                            uncertainty="none",data=d)
+#'   head(generics::augment(result))
+#'   head(generics::augment(result, data=d), 3)
+#'   summary(generics::augment(result)$.fitted_estimand)
+#' }
+augment.gamlss_posthoc <- function(x,data=NULL,...) {
+  object<-x$model; data<-data%||%x$data
+  if(is.null(object)||is.null(data))stop("The result does not retain model/data; supply `data` and use a 0.3.0 result.",call.=FALSE)
+  out<-as.data.frame(data); out$.fitted_estimand<-.gph_predict_estimand(object,out,x$estimand,x$what,data=out)
+  resp<-try(all.vars(.gph_get_formula(object,.gph_model_parameters(object)[1]))[1],silent=TRUE); if(!inherits(resp,"try-error")&&resp%in%names(out))out$.resid<-out[[resp]]-out$.fitted_estimand
+  out
+}
+
+#' Extract parameters in the easystats style
+#' @param model A `gamlss_posthoc` object.
+#' @param ... Unused.
+#' @return Data frame compatible with `parameters` conventions.
+#' @exportS3Method parameters::model_parameters
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
+#'     requireNamespace("distributions3", quietly = TRUE)) {
+#'   set.seed(330)
+#'   d <- data.frame(trt=factor(rep(c("A","B"), each=20)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu=ifelse(d$trt=="A",2,2.7), sigma=.22)
+#'   fit <- gamlss::gamlss(y~trt, family=gamlss.dist::GA, data=d, trace=FALSE)
+#'   result <- gamlss_posthoc(fit,"trt",estimand="mean",contrast="pairwise",
+#'                            uncertainty="none",data=d)
+#'   if (requireNamespace("parameters", quietly=TRUE)) {
+#'     parameters::model_parameters(result)
+#'     as.data.frame(parameters::model_parameters(result))
+#'     parameters::model_parameters(result)[, c("Parameter","Coefficient")]
+#'   }
+#' }
+model_parameters.gamlss_posthoc <- function(model,...) {
+  d<-model$contrasts%||%model$estimates; d<-as.data.frame(d)
+  out<-data.frame(Parameter=if("contrast"%in%names(d))d$contrast else seq_len(nrow(d)),Coefficient=d$estimate,stringsAsFactors=FALSE)
+  if("SE"%in%names(d))out$SE<-d$SE; if("lower.CL"%in%names(d))out$CI_low<-d$lower.CL; if("upper.CL"%in%names(d))out$CI_high<-d$upper.CL; if("p.value"%in%names(d))out$p<-d$p.value
+  class(out)<-c("parameters_model",class(out)); out
+}
+
+
+# ===== export_report.R =====
+
+# Export and reporting --------------------------------------------------------
+
+.gph_report_model_info <- function(res) {
+  m <- res$model %||% NULL
+  if (is.null(m)) return(data.frame())
+  data.frame(
+    family = tryCatch(.gph_family_name(m), error = function(e) NA_character_),
+    converged = if (!is.null(m$converged)) as.logical(m$converged)[1L] else NA,
+    iterations = if (!is.null(m$iter)) as.numeric(m$iter)[1L] else if (!is.null(m$no.cyc)) as.numeric(m$no.cyc)[1L] else NA_real_,
+    global_deviance = m$G.deviance %||% NA_real_,
+    effective_df = m$df.fit %||% NA_real_,
+    AIC = tryCatch(stats::AIC(m), error = function(e) NA_real_),
+    stringsAsFactors = FALSE
+  )
+}
+
+.gph_result_table <- function(x,component=c("estimates","contrasts")) {
+  component<-match.arg(component); if(inherits(x,"gamlss_posthoc")) return(as.data.frame(if(component=="estimates")x$estimates else x$contrasts))
+  if(inherits(x,"gamlss_trend"))return(as.data.frame(x$values)); as.data.frame(x)
+}
+
+#' Convert a gamlssPosthoc result to a flextable
+#' @param x Result object or data frame.
+#' @param component Estimates or contrasts.
+#' @param digits Number of numeric digits.
+#' @param ... Arguments forwarded to `flextable::flextable()`.
+#' @return A flextable object.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   result <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise", uncertainty = "none", data = d)
+#'   if (requireNamespace("flextable", quietly = TRUE)) {
+#'     f1 <- as_flextable(result)
+#'     f2 <- as_flextable(result, component = "contrasts")
+#'     f3 <- as_flextable(result, digits = 2)
+#'   }
+#' }
+as_flextable <- function(x,component=c("estimates","contrasts"),digits=3,...) {
+  .gph_require("flextable","for Word-ready tables."); d<-.gph_result_table(x,match.arg(component)); num<-vapply(d,is.numeric,logical(1)); d[num]<-lapply(d[num],round,digits=digits); ft<-flextable::flextable(d,...); flextable::autofit(ft)
+}
+
+#' Export results to a Word document
+#' @param x Result object.
+#' @param file Output `.docx` path.
+#' @param component Estimates or contrasts.
+#' @param title Document title.
+#' @param digits Number of digits.
+#' @return Invisibly, the file path.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   result <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise", uncertainty = "none", data = d)
+#'   if (requireNamespace("flextable", quietly = TRUE) && requireNamespace("officer", quietly = TRUE)) {
+#'     f1 <- export_to_word(result, tempfile(fileext = ".docx"))
+#'     f2 <- export_to_word(result, tempfile(fileext = ".docx"), component = "contrasts")
+#'     f3 <- export_to_word(result, tempfile(fileext = ".docx"), title = "GAMLSS results")
+#'   }
+#' }
+export_to_word <- function(x,file,component=c("estimates","contrasts"),title="gamlssPosthoc results",digits=3) {
+  .gph_require("officer","for Word export."); .gph_require("flextable","for Word export."); ft<-as_flextable(x,match.arg(component),digits); doc<-officer::read_docx(); doc<-officer::body_add_par(doc,title,style="heading 1"); doc<-flextable::body_add_flextable(doc,ft); print(doc,target=file); invisible(normalizePath(file,mustWork=FALSE))
+}
+
+#' Export results as a LaTeX table
+#' @param x Result object.
+#' @param file Optional output `.tex` path. If `NULL`, the LaTeX string is returned.
+#' @param component Estimates or contrasts.
+#' @param digits Number of digits.
+#' @param caption Optional caption.
+#' @return Character LaTeX table or output path invisibly when a file is written.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   result <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise", uncertainty = "none", data = d)
+#'   t1 <- export_to_latex(result)
+#'   t2 <- export_to_latex(result, component = "contrasts")
+#'   f3 <- export_to_latex(result, tempfile(fileext = ".tex"), caption = "GAMLSS results")
+#' }
+export_to_latex <- function(x, file = NULL, component = c("estimates", "contrasts"),
+                            digits = 3, caption = NULL) {
+  d <- .gph_result_table(x, match.arg(component))
+  num <- vapply(d, is.numeric, logical(1))
+  d[num] <- lapply(d[num], round, digits = digits)
+
+  esc <- function(z) {
+    z <- as.character(z)
+    z <- gsub("\\\\", "\\\\textbackslash{}", z, fixed = TRUE)
+    for (ch in c("_", "&", "#", "%", "$"))
+      z <- gsub(ch, paste0("\\\\", ch), z, fixed = TRUE)
+    z
+  }
+
+  cols <- names(d)
+  align <- paste0("l", paste(rep("r", max(0L, ncol(d) - 1L)), collapse = ""))
+  body <- if (nrow(d)) vapply(seq_len(nrow(d)), function(i) {
+    vals <- vapply(unname(as.list(d[i, , drop = FALSE])), esc, character(1))
+    paste0(paste(vals, collapse = " & "), " \\\\")
+  }, character(1)) else character()
+
+  lines <- c(
+    "\\begin{table}[ht]",
+    "\\centering",
+    if (!is.null(caption)) paste0("\\caption{", esc(caption), "}") else NULL,
+    paste0("\\begin{tabular}{", align, "}"),
+    "\\hline",
+    paste0(paste(esc(cols), collapse = " & "), " \\\\"),
+    "\\hline",
+    body,
+    "\\hline",
+    "\\end{tabular}",
+    "\\end{table}"
+  )
+  tex <- paste(lines, collapse = "\n")
+  if (is.null(file)) return(tex)
+  writeLines(tex, file, useBytes = TRUE)
+  invisible(normalizePath(file, mustWork = FALSE))
+}
+
+#' Generate an automatic HTML, Word, or Markdown report
+#' @param object Fitted GAMLSS model or `gamlss_posthoc` result.
+#' @param output `html`, `word`, or `md`.
+#' @param file Optional destination file.
+#' @param title Report title.
+#' @param include_plots Include an automatic post-hoc figure when possible.
+#' @param ... Arguments used to construct a post-hoc result when `object` is a model.
+#' @return Path to the generated report.
+#' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(310)
+#'   d <- data.frame(
+#'     dose = rep(seq(0, 120, length.out = 8), each = 8),
+#'     trt = factor(rep(c("A", "B"), length.out = 64))
+#'   )
+#'   mu <- exp(0.5 + 0.012 * d$dose - 0.00005 * d$dose^2 + 0.15 * (d$trt == "B"))
+#'   sig <- exp(log(0.22) + 0.001 * d$dose)
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = mu, sigma = sig)
+#'   fit <- gamlss::gamlss(y ~ trt + dose + I(dose^2),
+#'                         sigma.formula = ~ dose,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   result <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise", uncertainty = "none", data = d)
+#'   f1 <- generate_report(result, "md", tempfile(fileext = ".md"), include_plots = FALSE)
+#'   f2 <- generate_report(result, "md", tempfile(fileext = ".md"), title = "Agronomic GAMLSS", include_plots = FALSE)
+#'   f3 <- generate_report(fit, "md", tempfile(fileext = ".md"), include_plots = FALSE, specs = "trt", estimand = "mean", uncertainty = "none", data = d)
+#' }
+generate_report <- function(object, output = c("html", "word", "md"), file = NULL,
+                            title = "gamlssPosthoc report", include_plots = TRUE, ...) {
+  output <- match.arg(output)
+  res <- if (inherits(object, "gamlss_posthoc")) object else gamlss_posthoc(object, ...)
+  if (is.null(file)) file <- tempfile(fileext = switch(output, html = ".html", word = ".docx", md = ".md"))
+
+  make_plot <- function() {
+    if (!isTRUE(include_plots) || !requireNamespace("ggplot2", quietly = TRUE)) return(NULL)
+    tryCatch(ggplot2::autoplot(res), error = function(e) NULL)
+  }
+
+  if (output == "md") {
+    fig_path <- NULL
+    p <- make_plot()
+    if (!is.null(p)) {
+      fig_path <- paste0(tools::file_path_sans_ext(file), "_figure.png")
+      tryCatch(ggplot2::ggsave(fig_path, p, width = 7, height = 4.5, dpi = 180), error = function(e) fig_path <<- NULL)
+    }
+    est_txt <- paste(capture.output(print(res$estimates, row.names = FALSE)), collapse = "\n")
+    con_txt <- if (is.null(res$contrasts)) "None" else paste(capture.output(print(res$contrasts, row.names = FALSE)), collapse = "\n")
+    diag <- .gph_report_model_info(res)
+    diag_txt <- if (!nrow(diag)) "Unavailable" else paste(capture.output(print(diag, row.names = FALSE)), collapse = "\n")
+    lines <- c(
+      paste0("# ", title), "",
+      paste0("- Engine: `", res$engine, "`"),
+      paste0("- Estimand: ", res$estimand_info$target[1]),
+      paste0("- Population: `", res$population, "`"),
+      paste0("- Weighting: `", res$weighting, "`"),
+      paste0("- Uncertainty: `", res$uncertainty_method, "`"), "",
+      "## Model diagnostics", "", "```text", diag_txt, "```", "",
+      "## Estimates", "", "```text", est_txt, "```", "",
+      "## Contrasts", "", "```text", con_txt, "```",
+      if (!is.null(fig_path)) c("", "## Figure", "", paste0("![](", basename(fig_path), ")")) else NULL
+    )
+    writeLines(lines, file, useBytes = TRUE)
+    return(normalizePath(file, mustWork = FALSE))
+  }
+
+  .gph_require("rmarkdown", "for HTML/Word report generation.")
+  rmd <- tempfile(fileext = ".Rmd")
+  fmt <- if (output == "html") "html_document" else "word_document"
+  tmp <- tempfile(fileext = ".rds")
+  saveRDS(res, tmp)
+  tmp_norm <- gsub("\\\\", "/", tmp)
+  rmd_lines <- c(
+    "---", paste0('title: "', title, '"'), paste0("output: ", fmt), "---", "",
+    "```{r setup, echo=FALSE, message=FALSE, warning=FALSE}",
+    paste0("res <- readRDS('", tmp_norm, "')"),
+    "```", "",
+    "## Estimand", "", "```{r}", "res$estimand_info", "```", "",
+    "## Model diagnostics", "", "```{r}", ".gph_report_model_info <- getFromNamespace('.gph_report_model_info', 'gamlssPosthoc')", ".gph_report_model_info(res)", "```", "",
+    "## Estimates", "", "```{r}", "res$estimates", "```", "",
+    "## Contrasts", "", "```{r}", "res$contrasts", "```"
+  )
+  if (isTRUE(include_plots)) {
+    rmd_lines <- c(rmd_lines, "", "## Figure", "",
+                   "```{r, fig.width=7, fig.height=4.5}",
+                   "if (requireNamespace('ggplot2', quietly=TRUE)) print(ggplot2::autoplot(res))",
+                   "```")
+  }
+  writeLines(rmd_lines, rmd, useBytes = TRUE)
+  rmarkdown::render(rmd, output_file = normalizePath(file, mustWork = FALSE),
+                    quiet = TRUE, envir = new.env(parent = globalenv()))
+  normalizePath(file, mustWork = FALSE)
+}
+
+
 # ===== gamlss_engine_info.R =====
 
 #' Legacy one-row engine summary
@@ -1863,6 +3219,21 @@ gamlss_cld <- function(x, alpha = 0.05, p_adjust = NULL,
 #' @param weights Optional weighting rule used for routing diagnostics.
 #' @return A one-row data frame.
 #' @export
+#' @examples
+#' if (requireNamespace("gamlss", quietly = TRUE) &&
+#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
+#'   set.seed(17)
+#'   d <- data.frame(x=seq(0,1,length.out=50), trt=factor(rep(c("A","B"),25)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu=exp(.3+.4*d$x), sigma=.25)
+#'   fit <- gamlss::gamlss(y~x, sigma.formula=~trt, family=gamlss.dist::GA,
+#'                         data=d, trace=FALSE)
+#'   # 1. mu parameter diagnostics
+#'   gamlss_engine_info(fit, estimand="parameter", what="mu")
+#'   # 2. sigma parameter diagnostics
+#'   gamlss_engine_info(fit, estimand="parameter", what="sigma", population="reference")
+#'   # 3. Full-distribution mean diagnostics
+#'   gamlss_engine_info(fit, estimand="mean", what="mu")
+#' }
 gamlss_engine_info <- function(object, estimand = "parameter", what = "mu",
                                population = "observed", weights = NULL) {
   p <- gamlss_posthoc_plan(object, estimand = estimand, what = what,
@@ -1881,34 +3252,3 @@ gamlss_engine_info <- function(object, estimand = "parameter", what = "mu",
     stringsAsFactors = FALSE
   )
 }
-
-
-# ===== gamlssPosthoc-package.R =====
-
-#' gamlssPosthoc: Marginal and Distributional Post-Hoc Inference for GAMLSS
-#'
-#' Tools for post-hoc inference after generalized additive models for location,
-#' scale and shape (GAMLSS). The package treats the estimand, target population,
-#' comparison scale, and uncertainty method as separate choices. It routes
-#' supported parameter-wise requests to `emmeans` or `marginaleffects` and uses
-#' full predictive distributions plus refit bootstrap for zero-adjusted,
-#' smoother-based, and multi-parameter targets.
-#'
-#' @section Main functions:
-#' * [gamlss_posthoc()] computes standardized estimates and scientific contrasts.
-#' * [gamlss_posthoc_plan()] diagnoses model capabilities and recommends an engine.
-#' * [gamlss_trend()] evaluates curves, derivatives, turning points, and optima.
-#' * [gamlss_distribution_summary()] summarizes ordinary and zero-adjusted distributions.
-#' * [gamlss_poly_compare()] compares already-fitted nested polynomial models.
-#' * [gamlss_engine_info()] provides a compact legacy routing summary.
-#' * [gamlss_cld()] adds optional compact-letter displays to pairwise results.
-#'
-#' @references
-#' Rigby, R. A. and Stasinopoulos, D. M. (2005). Generalized additive models
-#' for location, scale and shape. *Journal of the Royal Statistical Society:
-#' Series C (Applied Statistics)*, 54, 507--554.
-#' \doi{10.1111/j.1467-9876.2005.00510.x}
-#'
-#' @importFrom graphics plot
-#' @keywords internal
-"_PACKAGE"

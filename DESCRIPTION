@@ -1,35 +1,50 @@
 Package: gamlssPosthoc
 Type: Package
-Title: Marginal and Distributional Post-Hoc Inference for GAMLSS Models
-Version: 0.2.0
+Title: Marginal, Distributional, and Graphical Post-Hoc Inference for GAMLSS Models
+Version: 0.3.0
 Authors@R: person(given = c("Walter", "Esfrain"), family = "Pereira",
     email = "walterufpb@yahoo.com.br", role = c("aut", "cre", "cph"),
     comment = c(ORCID = "0000-0003-1085-0191"))
-Description: Provides a conservative post-hoc workflow for generalized additive
-    models for location, scale and shape (GAMLSS), primarily fitted with the
-    'gamlss' package. The package routes simple
-    parameter-wise comparisons to 'emmeans' when supported and uses
-    standardized predictions, full predictive distributions, and refit
-    bootstrap procedures for smoothers, derived estimands, zero-adjusted
-    models, trends, and custom functions of multiple distributional
-    parameters. The framework follows the distributional-regression principles
-    of Rigby and Stasinopoulos (2005) <doi:10.1111/j.1467-9876.2005.00510.x>.
-    The emphasis is on stable inference for means, contrasts, polynomial
-    trends, and distribution-derived quantities in applied experiments.
+Description: Provides a conservative post-hoc and visualization workflow for
+    generalized additive models for location, scale and shape (GAMLSS). The
+    package separates estimands, target populations, contrast scales, and
+    uncertainty layers; routes supported operations to 'emmeans' or
+    'marginaleffects'; reconstructs full predictive distributions for derived
+    quantities and zero-adjusted models; and supplies an auditable 'ggplot2'
+    data-first graphics layer for distributional parameters, marginal
+    estimands, contrasts, predictive densities, quantile fans, trends,
+    derivatives, optima, surfaces, fit diagnostics, and model comparisons.
+    Methods follow the distributional-regression principles of Rigby and
+    Stasinopoulos (2005) <doi:10.1111/j.1467-9876.2005.00510.x> and the
+    model-interpretation principles of Arel-Bundock, Greifer and Heiss (2024)
+    <doi:10.18637/jss.v111.i09>.
 License: MIT + file LICENSE
 URL: https://github.com/wep69/gamlssPosthoc
 BugReports: https://github.com/wep69/gamlssPosthoc/issues
 Encoding: UTF-8
 Depends: R (>= 4.2.0)
 Imports:
+    generics,
+    ggplot2 (>= 4.0.0),
     graphics,
+    rlang,
     stats,
     utils
 Suggests:
+    broom,
     distributions3 (>= 0.2.1),
-    emmeans (>= 2.0.3),
+    flextable,
+    ggdist,
+    emmeans (>= 2.0.4),
     future,
     future.apply,
+    modelsummary,
+    mice,
+    nlme,
+    officer,
+    parameters,
+    patchwork,
+    pkgdown,
     gamlss (>= 5.5-0),
     gamlss.dist (>= 6.1-1),
     gamlss.inf (>= 1.0-2),
@@ -37,8 +52,9 @@ Suggests:
     marginaleffects (>= 0.32.0),
     multcompView,
     rmarkdown,
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    vdiffr
 VignetteBuilder: knitr
 Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)
-Config/roxygen2/version: 8.1.0
+RoxygenNote: 8.1.0

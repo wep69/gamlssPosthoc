@@ -1,0 +1,387 @@
+---
+title: "Advanced Workflows. Meta-Analysis, Longitudinal Data, Two-Part Models and Validation"
+author: "Walter Esfrain Pereira"
+output: rmarkdown::html_vignette
+bibliography: references.bib
+link-citations: true
+vignette: >
+  %\VignetteIndexEntry{Advanced Workflows. Meta-Analysis, Longitudinal Data, Two-Part Models and Validation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6, fig.height = 3.6)
+library(gamlssPosthoc)
+has_core <- requireNamespace("gamlss", quietly = TRUE) &&
+  requireNamespace("gamlss.dist", quietly = TRUE)
+has_dist <- has_core && requireNamespace("distributions3", quietly = TRUE)
+has_zadj <- has_dist && requireNamespace("gamlss.inf", quietly = TRUE)
+has_gg   <- has_core && requireNamespace("ggplot2", quietly = TRUE)
+has_nlme <- has_core && requireNamespace("nlme", quietly = TRUE)
+if (has_core) suppressPackageStartupMessages(library(gamlss.dist))
+```
+
+# Purpose
+
+This vignette covers the workflows where the scientific structure matters more
+than a single comparison of means. Every section states the estimator, gives a
+short executable demonstration, and ends with the failure mode that most often
+invalidates the analysis in practice.
+
+Sample sizes and replication counts here are deliberately small so that the
+vignette builds quickly. Production values are indicated in each section. The
+full-size scripts live in `inst/examples/`.
+
+# 1. Meta-analysis of a GAMLSS estimand
+
+## 1.1 Estimator
+
+Fit the appropriate model in each study, extract the *same* estimand under the
+*same* target population, and synthesize the resulting effects. With study
+effects \(\hat\delta_s\) and standard errors \(SE_s\), the fixed-effect synthesis
+uses inverse-variance weights,
+
+\[
+w_s = SE_s^{-2}, \qquad
+\hat\delta_{\mathrm{FE}} = \frac{\sum_s w_s \hat\delta_s}{\sum_s w_s},
+\qquad
+\operatorname{Var}(\hat\delta_{\mathrm{FE}}) = \frac{1}{\sum_s w_s}.
+\tag{1}
+\]
+
+Equation (1) assumes a single common effect. When studies differ in soil,
+cultivar, or season that assumption is untenable, and the random-effects model
+is the appropriate default,
+
+\[
+\hat\delta_s = \delta + u_s + e_s,
+\qquad u_s \sim N(0, \tau^2),
+\qquad e_s \sim N(0, SE_s^2).
+\tag{2}
+\]
+
+A simple moment estimator of the between-study variance is the DerSimonian and
+Laird form,
+
+\[
+\hat\tau^2 = \max\left\{0,\;
+\frac{Q - (S-1)}{\sum_s w_s - \left(\sum_s w_s^2 \big/ \sum_s w_s\right)}
+\right\},
+\qquad
+Q = \sum_s w_s\left(\hat\delta_s - \hat\delta_{\mathrm{FE}}\right)^2 ,
+\tag{3}
+\]
+
+with the heterogeneity share
+
+\[
+I^2 = \max\left\{0,\; \frac{Q - (S-1)}{Q}\right\}.
+\]
+
+Weights are then recomputed as \(w_s^{*} = (SE_s^2 + \hat\tau^2)^{-1}\). For real
+work use `metafor` [@viechtbauer2010], which provides REML estimation of
+\(\tau^2\), prediction intervals, and diagnostics; the code below is a
+transparent illustration, not a replacement.
+
+## 1.2 Demonstration
+
+```{r meta, eval=has_dist}
+set.seed(5001)
+sim_study <- function(s, effect) {
+  d <- data.frame(trt = factor(rep(c("Control", "Bio"), each = 30)))
+  d$y <- gamlss.dist::rGA(nrow(d),
+    mu = exp(0.7 + effect * (d$trt == "Bio")), sigma = 0.30)
+  fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::GA, data = d,
+                        trace = FALSE)
+  # The log-ratio is the scale to pool: symmetric and near-normal
+  ph <- gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+                       comparison = "log_ratio", engine = "distribution",
+                       uncertainty = "bootstrap", B = 49L, data = d)
+  c(delta = ph$contrasts$estimate[1], se = ph$contrasts$SE[1])
+}
+effects <- c(0.30, 0.22, 0.38)          # true study-specific effects
+res <- t(vapply(seq_along(effects), function(s) sim_study(s, effects[s]),
+                numeric(2)))
+res <- as.data.frame(res)
+res$study <- paste0("S", seq_len(nrow(res)))
+res
+```
+
+```{r meta-synthesis, eval=has_dist}
+w  <- 1 / res$se^2
+fe <- sum(w * res$delta) / sum(w)
+Q  <- sum(w * (res$delta - fe)^2)
+S  <- nrow(res)
+tau2 <- max(0, (Q - (S - 1)) / (sum(w) - sum(w^2) / sum(w)))
+I2   <- max(0, (Q - (S - 1)) / Q)
+wr <- 1 / (res$se^2 + tau2)
+re <- sum(wr * res$delta) / sum(wr)
+data.frame(fixed_effect = fe, random_effect = re,
+           tau2 = tau2, I2 = I2,
+           ratio_scale = exp(re))
+```
+
+## 1.3 Failure mode
+
+The synthesis is only meaningful if every \(\hat\delta_s\) is the same estimand.
+Pooling a difference of means from one study with a difference of linear
+predictors from another produces a number with no interpretation. Record
+`estimand_info` from each study alongside the effect, and refuse to pool when the
+target populations differ.
+
+# 2. Longitudinal data and the marginal-conditional gap
+
+## 2.1 The gap
+
+`gamlss` documents `random()` and `re()` for random-effect structures. `random()`
+acts as a smoother for random intercepts; `re()` interfaces with `nlme::lme()`
+for richer structures [@stasinopoulos2017].
+
+With a random intercept \(b_j \sim N(0,\sigma_b^2)\) and a log link, the
+subject-specific and population-averaged means differ by a fixed factor,
+
+\[
+\mathrm{E}\!\left[Y \mid b_j\right] = \exp(\eta + b_j),
+\qquad
+\mathrm{E}[Y] = \mathrm{E}_b\!\left[\exp(\eta + b)\right]
+= \exp(\eta)\exp\!\left(\tfrac{1}{2}\sigma_b^2\right).
+\tag{4}
+\]
+
+The attenuation factor \(\exp(\sigma_b^2/2)\) cancels in a *ratio* of two levels
+but not in a *difference*. That is the practical reason to prefer the log-ratio
+scale in mixed GAMLSS work, and the reason a marginal difference and a
+conditional difference are two different estimands rather than two estimates of
+one.
+
+```{r gap, eval=TRUE}
+sigma_b <- c(0.1, 0.3, 0.5, 0.8)
+data.frame(sigma_b = sigma_b,
+           attenuation = round(exp(sigma_b^2 / 2), 4))
+```
+
+## 2.2 Demonstration
+
+```{r longitudinal, eval=has_nlme && has_dist}
+set.seed(5002)
+J <- 20; T_ <- 4
+dl <- expand.grid(time = seq_len(T_), plot = factor(seq_len(J)))
+dl$trt <- factor(ifelse(as.integer(dl$plot) %% 2 == 0, "Bio", "Control"),
+                 levels = c("Control", "Bio"))
+b <- stats::rnorm(J, 0, 0.30)
+eta <- 0.6 + 0.25 * (dl$trt == "Bio") + 0.05 * dl$time + b[as.integer(dl$plot)]
+dl$y <- gamlss.dist::rGA(nrow(dl), mu = exp(eta), sigma = 0.25)
+
+fl <- gamlss::gamlss(y ~ trt + time + gamlss::random(plot),
+                     family = gamlss.dist::GA, data = dl, trace = FALSE)
+gamlss_posthoc(fl, "trt", estimand = "mean", contrast = "pairwise",
+               comparison = "log_ratio", uncertainty = "none", data = dl)$contrasts
+```
+
+## 2.3 Failure mode
+
+Reporting a subject-specific effect and describing it as a population effect. If
+the question is "what happens to the field", the estimand must be marginal; if it
+is "what happens to this plot", it must be conditional. Both are legitimate, and
+they are numerically different under any non-identity link.
+
+# 3. Hurdle, zero-adjusted and censored responses
+
+## 3.1 Three models, one data pattern
+
+A continuous positive response with exact zeros admits at least three
+representations, and they are not interchangeable.
+
+The **zero-adjusted** representation is a two-part mixture,
+
+\[
+f(y) = \begin{cases}
+h, & y = 0,\\[2pt]
+(1-h)\, f_{+}(y), & y > 0,
+\end{cases}
+\qquad
+\mathrm{E}(Y) = (1-h)\,\mathrm{E}(Y_+).
+\tag{5}
+\]
+
+The **hurdle** representation writes the same density with a truncated positive
+part, \(f_{+}(y) = f(y) / \{1 - F(0)\}\). When the positive component is the same
+family and the zero probability is modelled separately, the two are
+reparameterizations of one another and give identical fitted densities. They
+diverge as soon as the positive component is *not* truncated at zero in one of
+them, or as soon as a shared parameter links the two parts.
+
+The **censoring** representation assumes the zeros are not real zeros but values
+below a detection limit \(L\),
+
+\[
+P(Y \le L) = F(L), \qquad \text{observed } y_i = \max(Y_i, L).
+\]
+
+The decision rule is scientific, not statistical:
+
+| Origin of the zeros | Appropriate model |
+|---|---|
+| A structural process really produces exact zeros, such as complete crop failure | zero-adjusted or hurdle |
+| The measurement device cannot read below a threshold | left-censored |
+| Zeros are recording errors or missing values coded as zero | neither; treat as missing |
+
+Choosing a two-part model for detection-limit zeros inflates the estimated zero
+probability and biases the marginal mean downward. No goodness-of-fit statistic
+will reveal that, because both models can fit the observed histogram.
+
+## 3.2 Demonstration
+
+```{r zadj, eval=has_zadj}
+set.seed(5003)
+dz <- data.frame(trt = factor(rep(c("Control", "Bio"), each = 45)))
+h_true <- ifelse(dz$trt == "Control", 0.40, 0.18)
+pos <- gamlss.dist::rGA(nrow(dz),
+  mu = ifelse(dz$trt == "Control", 2.0, 3.0), sigma = 0.30)
+dz$y <- ifelse(stats::rbinom(nrow(dz), 1, h_true) == 1, 0, pos)
+
+zfit <- gamlss.inf::gamlssZadj(y = y, mu.formula = ~ trt, xi0.formula = ~ trt,
+                               family = gamlss.dist::GA, data = dz,
+                               trace = FALSE)
+nd <- data.frame(trt = factor(levels(dz$trt), levels = levels(dz$trt)))
+gamlss_distribution_summary(zfit, nd, data = dz)
+```
+
+The three scientific components, the zero probability, the conditional positive
+mean and the marginal mean, are separable and should be reported together.
+
+```{r zadj-plot, eval=has_gg && has_zadj}
+plot_gamlss_zero_adjusted(zfit, "trt", data = dz)
+```
+
+## 3.3 Failure mode
+
+Comparing only the positive part and calling it the treatment effect. If the
+treatment works by reducing the probability of total failure, the positive-part
+comparison can be flat while the marginal mean moves substantially.
+
+# 4. Cross-validation with proper scoring rules
+
+## 4.1 Why a proper rule
+
+A scoring rule \(S(F, y)\) is *proper* when the expected score is optimized by
+the true distribution, and *strictly proper* when that optimum is unique
+[@gneiting2007]. Optimizing an improper rule rewards a forecaster for reporting
+something other than their honest belief, which is exactly what a model-selection
+criterion must not do.
+
+For a distributional regression, the mean squared error is not the right
+criterion, because it is blind to everything except the first moment. A GAMLSS
+that halves the predictive dispersion at constant mean scores identically under
+MSE and much better under any strictly proper rule.
+
+Two strictly proper rules are used here. The **logarithmic score**,
+
+\[
+LS_i = -\log f_i(y_i),
+\tag{6}
+\]
+
+is local and severe: a single observation in a region of near-zero predictive
+density dominates the average. For a zero-adjusted model the density in equation
+(6) is the point mass \(h_i\) when \(y_i = 0\) and \((1 - h_i) f_{+}(y_i)\)
+otherwise.
+
+The **continuous ranked probability score**,
+
+\[
+CRPS_i = \int_{-\infty}^{\infty}\left\{F_i(z) - \mathbb{1}(y_i \le z)\right\}^2 dz,
+\tag{7}
+\]
+
+is also strictly proper, is expressed in the units of the response, and is far
+more robust than equation (6) to a single badly placed observation. For skewed
+agronomic responses CRPS is usually the better default.
+
+## 4.2 Demonstration
+
+```{r cv, eval=has_dist}
+set.seed(5004)
+dcv <- data.frame(dose = rep(seq(0, 100, length.out = 25), 4))
+dcv$y <- gamlss.dist::rGA(nrow(dcv),
+  mu = exp(0.8 + 0.008 * dcv$dose), sigma = 0.35)
+
+crps_sample <- function(F_draws, y) {
+  # Empirical CRPS from predictive draws, using the standard identity
+  # CRPS = E|X - y| - 0.5 E|X - X'|
+  a <- mean(abs(F_draws - y))
+  b <- mean(abs(outer(F_draws, F_draws, "-"))) / 2
+  a - b
+}
+
+folds <- rep(1:4, length.out = nrow(dcv))
+score <- function(family) {
+  out <- vapply(1:4, function(k) {
+    tr <- dcv[folds != k, ]; te <- dcv[folds == k, ]
+    f <- try(gamlss::gamlss(y ~ dose, family = family, data = tr, trace = FALSE),
+             silent = TRUE)
+    if (inherits(f, "try-error")) return(c(NA_real_, NA_real_))
+    mu <- stats::predict(f, what = "mu", newdata = te, type = "response", data = tr)
+    sg <- stats::predict(f, what = "sigma", newdata = te, type = "response", data = tr)
+    if (length(sg) == 1L) sg <- rep(sg, nrow(te))
+    dens <- if (identical(family, "GA")) {
+      gamlss.dist::dGA(te$y, mu = mu, sigma = sg)
+    } else {
+      gamlss.dist::dNO(te$y, mu = mu, sigma = sg)
+    }
+    ls <- mean(-log(pmax(dens, 1e-300)))
+    cr <- mean(vapply(seq_len(nrow(te)), function(i) {
+      dr <- if (identical(family, "GA")) {
+        gamlss.dist::rGA(200, mu = mu[i], sigma = sg[i])
+      } else {
+        gamlss.dist::rNO(200, mu = mu[i], sigma = sg[i])
+      }
+      crps_sample(dr, te$y[i])
+    }, numeric(1)))
+    c(ls, cr)
+  }, numeric(2))
+  c(log_score = mean(out[1, ], na.rm = TRUE),
+    crps = mean(out[2, ], na.rm = TRUE))
+}
+rbind(GA = score("GA"), NO = score("NO"))
+```
+
+Lower is better for both rules. The Gamma family, which generated the data,
+should win on both; when the two rules disagree, the log score is usually being
+driven by one extreme observation and CRPS is the more stable guide.
+
+For Bayesian fits the leave-one-out machinery of `loo` provides the same
+logarithmic score with importance-sampling diagnostics [@vehtari2017]; the
+frequentist k-fold loop above is the analogue available here.
+
+## 4.3 Failure mode
+
+Selecting the family by AIC alone. AIC is an in-sample criterion tied to the
+logarithmic score and to a fixed penalty; it does not test predictive
+calibration of the dispersion or shape parameters, which is precisely what a
+distributional model claims to get right.
+
+# 5. Computational cost
+
+Uncertainty layers dominate the run time, not the engines. The table gives the
+number of model fits required for one call.
+
+| Layer | Model refits | Typical relative cost |
+|---|---|---|
+| `none` | 1 | 1 |
+| `delta` | 1 | 1 to 2 |
+| `simulation` | 1, plus `B` coefficient draws | 2 to 5 |
+| `bootstrap` | `1 + B` | `B` |
+
+With `B = 499`, a refit bootstrap is roughly five hundred times the cost of a
+point estimate. Two practical rules follow. Prototype with `uncertainty = "none"`
+and switch on the bootstrap once the estimand is settled. And when a bootstrap is
+unavoidable, use `parallel = TRUE` with `cores` set below the physical core
+count, since each GAMLSS refit is already partly vectorized.
+
+`tools/benchmark.R` in the source tree compares engine and bootstrap costs.
+Benchmarks are a development tool and are not part of the API executed at load
+time.
+
+# References

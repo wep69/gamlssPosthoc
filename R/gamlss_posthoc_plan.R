@@ -16,48 +16,24 @@
 #'   observation weights rule out the `emmeans` reference-grid engine.
 #' @param uncertainty Requested uncertainty layer.
 #' @return An object of class `gamlss_posthoc_plan`.
+#' @export
 #' @examples
 #' if (requireNamespace("gamlss", quietly = TRUE) &&
 #'     requireNamespace("gamlss.dist", quietly = TRUE)) {
-#'   set.seed(2)
-#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 20)))
-#'   d$y <- gamlss.dist::rGA(nrow(d),
-#'     mu = ifelse(d$trt == "A", 2, 2.6), sigma = 0.3)
-#'   fit <- gamlss::gamlss(y ~ trt, data = d, family = gamlss.dist::GA,
-#'                         trace = FALSE)
-#'
-#'   # Which engine is eligible, and why the others are not
-#'   gamlss_posthoc_plan(fit, estimand = "mean")
+#'   set.seed(13)
+#'   d <- data.frame(x = seq(0, 1, length.out = 60),
+#'                   trt = factor(rep(c("A", "B"), 30)))
+#'   d$y <- gamlss.dist::rGA(nrow(d), mu = exp(.5 + .4*d$x + .15*(d$trt=="B")), sigma=.25)
+#'   fit <- gamlss::gamlss(y ~ trt + x, sigma.formula = ~ trt,
+#'                         family = gamlss.dist::GA, data = d, trace = FALSE)
+#'   # 1. Marginal response mean on the observed population
+#'   gamlss_posthoc_plan(fit, estimand = "mean", population = "observed")
+#'   # 2. Parameter-wise reference-grid inference
+#'   gamlss_posthoc_plan(fit, estimand = "parameter", what = "sigma",
+#'                       population = "reference", uncertainty = "delta")
+#'   # 3. Distribution-derived variance
+#'   gamlss_posthoc_plan(fit, estimand = "variance", contrast = "pairwise")
 #' }
-#'
-#' # Normal response with a `pb()` smoother: the capability matrix reports
-#' # which parameter carries a smoother and how that constrains routing.
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
-#'   set.seed(71)
-#'   d <- data.frame(x = runif(60, 0, 10))
-#'   d$y <- gamlss.dist::rNO(nrow(d), mu = 5 + 0.8 * d$x, sigma = 1)
-#'   # `gamlss::pb()` is qualified because examples run with only this
-#'   # package attached.
-#'   fit <- gamlss::gamlss(y ~ gamlss::pb(x), family = gamlss.dist::NO,
-#'                         data = d, trace = FALSE)
-#'   gamlss_posthoc_plan(fit, estimand = "parameter", what = "mu",
-#'                       population = "reference")
-#' }
-#'
-#' # Zero-adjusted Gamma, asking for the exact mass at zero. The plan lists
-#' # every distributional parameter discovered in the fit, including `nu`.
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE)) {
-#'   set.seed(72)
-#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 40)))
-#'   d$y <- gamlss.dist::rZAGA(nrow(d), mu = 2, sigma = 0.4,
-#'                             nu = ifelse(d$trt == "A", 0.35, 0.10))
-#'   fit <- gamlss::gamlss(y ~ trt, nu.formula = ~ trt,
-#'                         family = gamlss.dist::ZAGA, data = d, trace = FALSE)
-#'   gamlss_posthoc_plan(fit, estimand = "prob_zero")
-#' }
-#' @export
 gamlss_posthoc_plan <- function(object, estimand = "parameter", what = "mu",
                                  contrast = "none", comparison = "difference",
                                  population = "observed", weights = NULL,

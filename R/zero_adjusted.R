@@ -1,4 +1,24 @@
-# Generic probability-distribution helpers ------------------------------------
+﻿# Generic probability-distribution helpers ------------------------------------
+
+# `prodist()` for GAMLSS fits is available in some 'gamlss' releases as a
+# registered S3 method and in others only as an internal object.  Resolve it
+# defensively and return NULL when it cannot be used, so callers can fall back
+# to the public parameter-based construction.
+.gph_prodist_gamlss <- function(object, newdata, data = NULL) {
+  if (!requireNamespace("gamlss", quietly = TRUE)) return(NULL)
+  fn <- NULL
+  if (requireNamespace("distributions3", quietly = TRUE)) {
+    fn <- tryCatch(utils::getS3method("prodist", "gamlss", optional = TRUE),
+                   error = function(e) NULL)
+  }
+  if (is.null(fn)) {
+    fn <- tryCatch(get("prodist", envir = asNamespace("gamlss"), mode = "function"),
+                   error = function(e) NULL)
+  }
+  if (!is.function(fn)) return(NULL)
+  ans <- try(fn(object, newdata = newdata, data = data), silent = TRUE)
+  if (inherits(ans, "try-error")) NULL else ans
+}
 
 .gph_positive_distribution <- function(object, pars, positive_dist_fun = NULL) {
   if (is.function(positive_dist_fun)) {
@@ -28,13 +48,12 @@
 .gph_distribution <- function(object, newdata, data = NULL, positive_dist_fun = NULL) {
   .gph_require("distributions3", "for distributional summaries.")
   if (!.gph_is_zadj(object)) {
-    .gph_require("gamlss", "for `prodist()`.")
-    ## `prodist.gamlss()` is registered as an S3 method for the
-    ## distributions3 generic but is not exported by gamlss, so it must be
-    ## reached through the generic rather than with `gamlss::prodist`.
-    return(distributions3::prodist(object,
-                                   newdata = .gph_clean_newdata(newdata, data),
-                                   data = data))
+    ans <- .gph_prodist_gamlss(object, newdata = newdata, data = data)
+    if (!is.null(ans)) return(ans)
+    # Portable fallback: rebuild the predictive distribution from the
+    # predicted distributional parameters using the public gamlss.dist API.
+    pars <- .gph_predict_parameters(object, newdata, data)
+    return(.gph_positive_distribution(object, pars, positive_dist_fun))
   }
   pars <- .gph_predict_parameters(object, newdata, data)
   if (is.null(pars$xi0)) stop("The zero-adjusted model does not expose an `xi0` parameter.", call. = FALSE)
@@ -72,8 +91,6 @@
     qadj <- pmin(pmax(qadj, 0), 1)
     idx <- which(positive)
     ans[idx] <- vapply(seq_along(idx), function(j) {
-      ## `names=` must not be forwarded: gamlss.dist's quantile method passes
-      ## `...` straight to the family q-function, which has no such argument.
       as.numeric(stats::quantile(z$positive[idx[j]], probs = qadj[j]))[1L]
     }, numeric(1))
   }
@@ -96,38 +113,12 @@
   replicate(n, one())
 }
 
-## Exact probability mass at zero.
-##
-## Three cases must be separated, because a single rule is wrong for at least
-## one of them:
-##
-##   discrete (PO, NBI, ...)   P(Y=0) is the density at zero.
-##   mixed    (ZAGA, ZAIG, ...) `is_discrete()` and `is_continuous()` are both
-##                             FALSE. Support is non-negative, so P(Y<0)=0 and
-##                             the atom at zero is exactly F(0).
-##   continuous (GA, NO, ...)  There is no atom, so the mass is 0. Note that
-##                             F(0) must NOT be used here: for a family with
-##                             support on the whole real line, such as NO,
-##                             F(0) is a tail probability, not a point mass.
 .gph_exact_prob_zero <- function(D) {
   .gph_require("distributions3", "for exact probability masses.")
-  n <- length(D)
   discrete <- distributions3::is_discrete(D)
-  if (length(discrete) == 1L) discrete <- rep(discrete, n)
-  continuous <- distributions3::is_continuous(D)
-  if (length(continuous) == 1L) continuous <- rep(continuous, n)
-
-  ans <- numeric(n)
-  if (any(discrete)) {
-    ans[discrete] <- as.numeric(distributions3::pdf(D[discrete], 0))
-  }
-  mixed <- !discrete & !continuous
-  if (any(mixed)) {
-    val <- try(as.numeric(distributions3::cdf(D[mixed], 0)), silent = TRUE)
-    if (!inherits(val, "try-error") && length(val) == sum(mixed)) {
-      ans[mixed] <- pmin(pmax(val, 0), 1)
-    }
-  }
+  if (length(discrete) == 1L) discrete <- rep(discrete, length(D))
+  ans <- numeric(length(discrete))
+  if (any(discrete)) ans[discrete] <- as.numeric(distributions3::pdf(D[discrete], 0))
   ans
 }
 

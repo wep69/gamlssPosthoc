@@ -38,7 +38,7 @@ nav_html='\n'.join(nav)
 
 page=f'''<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>gamlssPosthoc 0.2.0 — README interativo</title>
+<title>gamlssPosthoc 0.3.0 — README interativo</title>
 <style>
 :root{{--bg:#fff;--fg:#17202a;--muted:#657786;--panel:#f5f7f9;--line:#d9e0e6;--accent:#2457a6;--code:#f6f8fa}}
 [data-theme="dark"]{{--bg:#11161c;--fg:#e9eef3;--muted:#9aabb9;--panel:#182028;--line:#34414c;--accent:#83b5ff;--code:#161b22}}
@@ -55,7 +55,7 @@ blockquote{{margin-left:0;padding:.6rem 1rem;border-left:4px solid var(--accent)
 .hidden-search{{display:none!important}}
 @media(max-width:900px){{.layout{{grid-template-columns:1fr}} aside{{display:none}} input{{min-width:0;max-width:none;flex:1}}}}
 </style></head><body>
-<div class="top"><strong>gamlssPosthoc 0.2.0</strong><input id="search" placeholder="Buscar no README…"><button id="theme">Claro/escuro</button></div>
+<div class="top"><strong>gamlssPosthoc 0.3.0</strong><input id="search" placeholder="Buscar no README…"><button id="theme">Claro/escuro</button></div>
 <div class="layout"><aside><div class="route"><b>Assistente de engine</b><br><label>Estimando <select id="est"><option>parameter</option><option>mean</option><option>variance</option><option>quantile</option><option>prob_zero</option></select></label><br><label>População <select id="pop"><option>observed</option><option>balanced</option><option>reference</option></select></label><br><label>Smoother <select id="smooth"><option value="no">não</option><option value="yes">sim</option></select></label><p id="rec"></p></div>{nav_html}</aside><main>{body}</main></div>
 <script>
 const root=document.documentElement; document.getElementById('theme').onclick=()=>{{root.dataset.theme=root.dataset.theme==='dark'?'':'dark';localStorage.setItem('gph-theme',root.dataset.theme)}}; root.dataset.theme=localStorage.getItem('gph-theme')||'';

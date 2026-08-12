@@ -1,0 +1,24 @@
+url: https://walteresfrain.github.io/gamlssPosthoc/
+template:
+  bootstrap: 5
+  bslib:
+    primary: "#2C3E50"
+navbar:
+  structure:
+    left: [intro, reference, articles, news]
+    right: [search, github]
+reference:
+- title: Core inference
+  contents: [gamlss_posthoc, gamlss_posthoc_plan, gamlss_distribution_summary, gamlss_trend, gamlss_poly_compare, gamlss_cld]
+- title: Graphics data
+  contents: [gamlss_plot_data]
+- title: Scientific graphics
+  contents: [starts_with("plot_gamlss_")]
+- title: Themes
+  contents: [theme_gamlss, theme_gamlss_journal, theme_gamlss_presentation]
+- title: Reporting
+  contents: [as_flextable, export_to_word, export_to_latex, generate_report]
+articles:
+- title: Main workflows
+  navbar: ~
+  contents: [visualization, workflow, advanced-workflows, missing-data]

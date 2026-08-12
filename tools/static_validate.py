@@ -83,10 +83,15 @@ for fn in exports:
         failures.append(f'exported function missing definition: {fn}');continue
     op=rtext.find('(',m.start())
     rargs=argnames(balanced_body(rtext,op))
-    rd=ROOT/'man'/f'{fn}.Rd'
-    if not rd.exists():
-        failures.append(f'missing Rd: {fn}');continue
-    rds=rd.read_text()
+    # Locate documentation by alias, because several related functions can
+    # legitimately share one Rd page through @rdname.
+    rd=None; rds=None
+    for cand in (ROOT/'man').glob('*.Rd'):
+        ct=cand.read_text()
+        if re.search(r'\\alias\{'+re.escape(fn)+r'\}', ct):
+            rd=cand; rds=ct; break
+    if rd is None:
+        failures.append(f'missing Rd alias: {fn}');continue
     um=re.search(re.escape(fn)+r'\s*\(',rds)
     if not um:
         # functions with compact usage should still match
@@ -120,9 +125,11 @@ for fn in exports:
         block='\n'.join(reversed(block))
         roxy_params=[]
         for pm in re.finditer(r"(?m)^#' @param\s+([^\s]+)", block):
-            roxy_params.append(pm.group(1).strip('`'))
+            token=pm.group(1)
+            roxy_params.extend([z.strip('` ') for z in token.split(',') if z.strip()])
         miss_roxy=[a for a in rargs if a not in roxy_params]
-        if miss_roxy:
+        # @rdname blocks inherit argument documentation from the shared topic.
+        if miss_roxy and "@rdname" not in block:
             failures.append(f'Roxygen @param missing {fn}: {miss_roxy}')
     results.append((fn,rargs))
 
@@ -153,7 +160,8 @@ for k,v in seen.items():
 for line in (ROOT/'NAMESPACE').read_text().splitlines():
     m=re.match(r'S3method\(([^,]+),([^)]+)\)',line.strip())
     if m:
-        name=f'{m.group(1)}.{m.group(2)}'
+        generic=m.group(1).split('::')[-1]
+        name=f'{generic}.{m.group(2)}'
         if not re.search(r'(?m)^'+re.escape(name)+r'\s*<-\s*function\s*\(',rtext):
             failures.append(f'S3 target missing: {name}')
 
@@ -180,6 +188,25 @@ critical = {
     'quantitative turning points': ('R/gamlss_trend.R', r'\.gph_turning_points'),
     'local quadratic optimum refinement': ('R/gamlss_trend.R', r'\.gph_refine_extremum'),
     'diagnostic plan': ('R/gamlss_posthoc_plan.R', r'gamlss_posthoc_plan'),
+    'data-first graphics layer': ('R/plot_data.R', r'gamlss_plot_data'),
+    'parameter link-scale plotting': ('R/plot_data.R', r'parameter_scale'),
+    'marginal mixture quantile solver': ('R/plot_data.R', r'\.gph_mixture_quantile'),
+    'distinct distribution group labels': ('R/plot_data.R', r'\.gph_label'),
+    'ggdist optional uncertainty graphics': ('R/plots.R', r'ggdist::'),
+    'bootstrap optimum location draws': ('R/gamlss_trend.R', r'optimum_draws'),
+    'factor predictive fit layer': ('R/plots.R', r'geom_errorbar'),
+    'native diagnostics': ('R/plots.R', r'plot_gamlss_diagnostics'),
+    'tidy method': ('R/tidy_methods.R', r'tidy\.gamlss_posthoc'),
+    'glance method': ('R/tidy_methods.R', r'glance\.gamlss_posthoc'),
+    'augment method': ('R/tidy_methods.R', r'augment\.gamlss_posthoc'),
+    'parameters integration': ('R/tidy_methods.R', r'model_parameters\.gamlss_posthoc'),
+    'autoplot methods': ('R/plots.R', r'autoplot\.gamlss_posthoc'),
+    'Word export': ('R/export_report.R', r'export_to_word'),
+    'LaTeX export': ('R/export_report.R', r'export_to_latex'),
+    'automatic report diagnostics': ('R/export_report.R', r'\.gph_report_model_info'),
+    'visual regression specifications': ('tests/testthat/test-vdiffr-v03.R', r'expect_doppelganger'),
+    'pkgdown configuration': ('_pkgdown.yml', r'reference:'),
+    'cheatsheet included': ('inst/cheatsheet/CHEATSHEET_SOURCE.md', r'gamlssPosthoc'),
 }
 critical_results = {}
 for label, (rel, pat) in critical.items():

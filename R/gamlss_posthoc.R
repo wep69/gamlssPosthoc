@@ -8,20 +8,6 @@
 #' involving the full distribution, zero adjustment, or multiple parameters are
 #' evaluated by the distribution engine and can use refit bootstrap uncertainty.
 #'
-#' @details
-#' For a generic zero-adjusted model with zero probability \eqn{h} and
-#' positive-part distribution \eqn{Y_+}, the package computes
-#' \deqn{E(Y)=(1-h)E(Y_+)}
-#' and
-#' \deqn{Var(Y)=(1-h)Var(Y_+)+h(1-h)E(Y_+)^2.}
-#' Quantiles are also obtained from the complete two-part distribution.
-#' Consequently, no assumption that a parameter named `mu` is the mathematical
-#' expectation is required.
-#'
-#' `comparison` is deliberately distinct from `contrast`: the former defines the
-#' scientific scale of an effect, while the latter defines which levels are
-#' compared.
-#'
 #' @param object A fitted `gamlss` or `gamlssZadj` model.
 #' @param specs Character vector of focal variables.
 #' @param by Optional character vector of conditioning variables.
@@ -79,59 +65,21 @@
 #' if (requireNamespace("gamlss", quietly = TRUE) &&
 #'     requireNamespace("gamlss.dist", quietly = TRUE)) {
 #'   set.seed(11)
-#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 30)))
+#'   d <- data.frame(trt = factor(rep(c("A", "B", "C"), each = 20)))
 #'   d$y <- gamlss.dist::rGA(nrow(d),
-#'     mu = ifelse(d$trt == "A", 2, 2.7), sigma = 0.3)
-#'   fit <- gamlss::gamlss(y ~ trt, data = d, family = gamlss.dist::GA,
-#'                         trace = FALSE)
-#'   gamlss_posthoc(fit, specs = "trt", estimand = "mean",
-#'                  contrast = "pairwise", comparison = "percent_change",
+#'     mu = c(A = 2, B = 2.5, C = 3.0)[d$trt], sigma = 0.25)
+#'   fit <- gamlss::gamlss(y ~ trt, sigma.formula = ~ trt, data = d,
+#'                         family = gamlss.dist::GA, trace = FALSE)
+#'   # 1. Difference between marginal response means
+#'   gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "pairwise",
+#'                  comparison = "difference", uncertainty = "none", data = d)
+#'   # 2. Ratios relative to the first treatment
+#'   gamlss_posthoc(fit, "trt", estimand = "mean", contrast = "reference",
+#'                  comparison = "ratio", uncertainty = "none", data = d)
+#'   # 3. Compare the distributional sigma parameter on a reference grid
+#'   gamlss_posthoc(fit, "trt", estimand = "parameter", what = "sigma",
+#'                  population = "reference", contrast = "none",
 #'                  uncertainty = "none", data = d)
-#' }
-#'
-#' # Lognormal: the response mean is not exp(mu), because it also depends on
-#' # sigma. The distribution engine returns E(Y), not the back-transformed
-#' # location parameter.
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
-#'     requireNamespace("distributions3", quietly = TRUE)) {
-#'   set.seed(22)
-#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 30)))
-#'   d$y <- gamlss.dist::rLOGNO(nrow(d),
-#'     mu = ifelse(d$trt == "A", 1.0, 1.4), sigma = 0.5)
-#'   fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::LOGNO,
-#'                         data = d, trace = FALSE)
-#'   gamlss_posthoc(fit, specs = "trt", estimand = "mean",
-#'                  contrast = "pairwise", comparison = "ratio",
-#'                  uncertainty = "none", data = d)$estimates
-#' }
-#'
-#' # Normal: comparing the dispersion submodel rather than the location one.
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
-#'     requireNamespace("emmeans", quietly = TRUE)) {
-#'   set.seed(21)
-#'   d <- data.frame(g = factor(rep(c("low", "high"), each = 30)))
-#'   d$y <- gamlss.dist::rNO(nrow(d), mu = 10,
-#'                           sigma = ifelse(d$g == "high", 3, 1.2))
-#'   fit <- gamlss::gamlss(y ~ 1, sigma.formula = ~ g,
-#'                         family = gamlss.dist::NO, data = d, trace = FALSE)
-#'   gamlss_posthoc(fit, specs = "g", estimand = "parameter", what = "sigma",
-#'                  population = "reference", contrast = "pairwise", data = d)
-#' }
-#'
-#' # Poisson counts: a quantile of the predictive distribution.
-#' if (requireNamespace("gamlss", quietly = TRUE) &&
-#'     requireNamespace("gamlss.dist", quietly = TRUE) &&
-#'     requireNamespace("distributions3", quietly = TRUE)) {
-#'   set.seed(23)
-#'   d <- data.frame(trt = factor(rep(c("A", "B"), each = 30)))
-#'   d$y <- gamlss.dist::rPO(nrow(d), mu = ifelse(d$trt == "A", 4, 7))
-#'   fit <- gamlss::gamlss(y ~ trt, family = gamlss.dist::PO,
-#'                         data = d, trace = FALSE)
-#'   gamlss_posthoc(fit, specs = "trt", estimand = "quantile", prob = 0.9,
-#'                  engine = "distribution", uncertainty = "none",
-#'                  data = d)$estimates
 #' }
 gamlss_posthoc <- function(object, specs, by = NULL,
                             estimand = c("parameter", "mean", "variance", "quantile", "prob_zero", "custom"),
@@ -215,16 +163,18 @@ gamlss_posthoc <- function(object, specs, by = NULL,
   }
 
   if (engine == "marginaleffects") {
-    ans <- .gph_posthoc_marginaleffects(
+    ans <- (.gph_posthoc_marginaleffects(
       object = object, specs = specs, by = by, what = what,
       contrast = contrast, comparison = comparison, at = at,
       population = population, weights = weights, uncertainty = uncertainty,
       B = B, ref = ref, scores = scores, degree = degree, adjust = adjust, data = data, ...
-    )
+    ))
     if (!is.null(ans)) {
       ans$estimand <- estimand
       ans$estimand_info <- .gph_estimand_info(object, estimand, what, prob, population, ans$weighting)
       ans$call <- match.call()
+      ans$model <- object
+      ans$data <- data
       class(ans) <- "gamlss_posthoc"
       return(ans)
     }
@@ -248,12 +198,12 @@ gamlss_posthoc <- function(object, specs, by = NULL,
       stats::as.formula(paste("~", paste(specs, collapse = " * "), "|", paste(by, collapse = " * ")))
     } else stats::as.formula(paste("~", paste(specs, collapse = " * ")))
     emm_weights <- if (is.character(weights)) weights else NULL
-    ## emmeans' gamlss basis method prints the model summary as a side effect;
-    ## suppress it so the engine stays silent.
-    utils::capture.output(
-      emm <- emmeans::emmeans(.gph_emmeans_object(object), specs = spec_formula, what = what,
-                              data = data, at = at, weights = emm_weights, ...)
-    )
+    emm_obj <- .gph_self_contained(object, data)
+    emm_vcov <- .gph_param_vcov(object, what)
+    emm_args <- c(list(emm_obj, specs = spec_formula, what = what, data = data,
+                       at = at, weights = emm_weights),
+                  if (!is.null(emm_vcov)) list(vcov. = emm_vcov), list(...))
+    emm <- do.call(emmeans::emmeans, emm_args)
     emm_resp <- try(emmeans::regrid(emm, transform = "response"), silent = TRUE)
     if (inherits(emm_resp, "try-error")) emm_resp <- emm
     est <- as.data.frame(summary(emm_resp, infer = c(uncertainty != "none", uncertainty != "none")))
@@ -288,7 +238,7 @@ gamlss_posthoc <- function(object, specs, by = NULL,
                 estimand_info = info, what = what, specs = specs, by = by,
                 contrast_method = contrast, comparison = comparison,
                 population = "reference", weighting = emm_weighting,
-                uncertainty_method = uncertainty, call = match.call(), emmGrid = emm_resp,
+                uncertainty_method = uncertainty, call = match.call(), model = object, data = data, emmGrid = emm_resp,
                 notes = "Parameter-wise inference from emmeans; arithmetic response-scale contrasts use regrid(transform='response').")
     class(out) <- "gamlss_posthoc"
     return(out)
@@ -342,7 +292,7 @@ gamlss_posthoc <- function(object, specs, by = NULL,
       if (!adjust %in% stats::p.adjust.methods) warning("Bootstrap contrasts cannot use '", adjust, "' through p.adjust(); using Holm.", call. = FALSE)
       if (length(by)) {
         key <- interaction(con[by], drop = TRUE, lex.order = TRUE)
-        con$p.value.adjusted <- stats::ave(con$p.value, key, FUN = function(z) stats::p.adjust(z, method = adj_method))
+        con$p.value.adjusted <- ave(con$p.value, key, FUN = function(z) stats::p.adjust(z, method = adj_method))
       } else con$p.value.adjusted <- stats::p.adjust(con$p.value, method = adj_method)
     }
   }
@@ -354,6 +304,7 @@ gamlss_posthoc <- function(object, specs, by = NULL,
               contrast_method = contrast, comparison = comparison,
               population = population, weighting = eval_info$weighting,
               uncertainty_method = uncertainty, call = match.call(),
+              model = object, data = data,
               bootstrap = if (uncertainty == "bootstrap") bootstrap else NULL,
               draws = if (keep_draws) draw_mat else NULL,
               notes = c("Predictions were standardized over the declared target population.",
@@ -368,28 +319,24 @@ gamlss_posthoc <- function(object, specs, by = NULL,
                                          ref, scores, degree, adjust, data, ...) {
   .gph_require("marginaleffects", "for the marginaleffects engine.")
   eval_info <- .gph_build_eval_data(object, data, specs, by, at, population, weights)
+  me_vcov <- if (uncertainty == "none") FALSE else TRUE
+  object <- .gph_self_contained(object, data)
+  # Some gamlss fits cannot expose a joint covariance matrix to marginaleffects
+  # (`vcov.gamlss()` resolves the fitted data by name).  Retry without standard
+  # errors rather than losing the point estimates.
   me <- try(marginaleffects::avg_predictions(
     object, newdata = eval_info$eval_data, by = ".gph_group_id",
     type = "response", what = what, wts = eval_info$eval_data$.gph_weight,
-    vcov = if (uncertainty == "none") FALSE else TRUE, ...
+    vcov = me_vcov, ...
   ), silent = TRUE)
-  ## `vcov.gamlss()` re-resolves the fitting data by name in the global
-  ## environment, so the covariance matrix is unavailable whenever the model
-  ## was fitted in a local scope. Point estimates remain valid, so the engine
-  ## degrades to point estimation instead of failing, and the caller is told
-  ## that intervals require the refit bootstrap.
-  if (inherits(me, "try-error") && uncertainty != "none") {
+  if (inherits(me, "try-error") && !identical(me_vcov, FALSE)) {
+    me_vcov <- FALSE
+    uncertainty <- "none"
     me <- try(marginaleffects::avg_predictions(
       object, newdata = eval_info$eval_data, by = ".gph_group_id",
       type = "response", what = what, wts = eval_info$eval_data$.gph_weight,
       vcov = FALSE, ...
     ), silent = TRUE)
-    if (!inherits(me, "try-error")) {
-      warning("The model covariance matrix is unavailable (gamlss re-resolves the fitting data by name, ",
-              "which fails for models fitted in a local scope). Returning marginaleffects point estimates; ",
-              "use `uncertainty='bootstrap'` for intervals.", call. = FALSE)
-      uncertainty <- "none"
-    }
   }
   if (inherits(me, "try-error")) return(NULL)
   if (uncertainty == "simulation") {
@@ -416,9 +363,13 @@ gamlss_posthoc <- function(object, specs, by = NULL,
       model = object, variables = vars, newdata = data,
       type = "response", what = what, comparison = .gph_me_comparison(comparison),
       wts = if (is.numeric(weights)) weights else FALSE,
-      vcov = if (uncertainty == "none") FALSE else TRUE
+      vcov = me_vcov
     ), if (length(by)) list(by = by) else list(), list(...))
     cmp <- try(do.call(marginaleffects::avg_comparisons, cmp_args), silent = TRUE)
+    if (inherits(cmp, "try-error") && !identical(me_vcov, FALSE)) {
+      cmp_args$vcov <- FALSE
+      cmp <- try(do.call(marginaleffects::avg_comparisons, cmp_args), silent = TRUE)
+    }
     if (!inherits(cmp, "try-error")) {
       if (uncertainty == "simulation") {
         simc <- try(marginaleffects::inferences(cmp, method = "simulation", R = as.integer(B)), silent = TRUE)
@@ -443,8 +394,8 @@ gamlss_posthoc <- function(object, specs, by = NULL,
         }
         if (length(by) && all(by %in% names(con))) {
           key <- interaction(con[by], drop = TRUE, lex.order = TRUE)
-          con$p.value.adjusted <- stats::ave(con$p.value, key,
-                                             FUN = function(z) stats::p.adjust(z, method = adj_method))
+          con$p.value.adjusted <- ave(con$p.value, key,
+                                      FUN = function(z) stats::p.adjust(z, method = adj_method))
         } else {
           con$p.value.adjusted <- stats::p.adjust(con$p.value, method = adj_method)
         }
@@ -480,23 +431,6 @@ print.gamlss_posthoc <- function(x, ...) {
   if (!is.null(x$contrasts)) {
     cat("\nContrasts\n")
     print(x$contrasts, row.names = FALSE)
-  }
-  invisible(x)
-}
-
-#' @method plot gamlss_posthoc
-#' @export
-#' @noRd
-plot.gamlss_posthoc <- function(x, ...) {
-  d <- x$estimates
-  fac <- intersect(c(x$specs, x$by), names(d))
-  if (!length(fac)) stop("No grouping variable available for plotting.", call. = FALSE)
-  g <- fac[1]
-  xx <- seq_len(nrow(d))
-  graphics::plot(xx, d$estimate, xaxt = "n", xlab = g, ylab = x$estimand_info$target[1], pch = 19, ...)
-  graphics::axis(1, at = xx, labels = as.character(d[[g]]))
-  if (all(c("lower.CL", "upper.CL") %in% names(d))) {
-    graphics::arrows(xx, d$lower.CL, xx, d$upper.CL, angle = 90, code = 3, length = 0.05)
   }
   invisible(x)
 }

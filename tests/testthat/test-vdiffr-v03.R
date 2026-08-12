@@ -1,0 +1,32 @@
+testthat::test_that("core plots have visual regression specifications", {
+  testthat::skip_on_cran()
+  testthat::skip_if(Sys.getenv("GAMLSSPOSTHOC_VDIFFR") != "true", "Set GAMLSSPOSTHOC_VDIFFR=true to run visual snapshots")
+  testthat::skip_if_not_installed("vdiffr")
+  testthat::skip_if_not_installed("ggplot2")
+  testthat::skip_if_not_installed("distributions3")
+  z <- .make_v03_fit()
+  p1 <- plot_gamlss_parameters(z$fit,"dose",parameters=c("mu","sigma"),data=z$d,n=15) + ggplot2::theme_test()
+  p2 <- plot_gamlss_distribution(z$fit,"trt",data=z$d,n_response=30) + ggplot2::theme_test()
+  p3 <- plot_gamlss_diagnostics(z$fit,"qq",data=z$d) + ggplot2::theme_test()
+  vdiffr::expect_doppelganger("multi-parameter effects",p1)
+  vdiffr::expect_doppelganger("predictive distribution",p2)
+  vdiffr::expect_doppelganger("gamlss qq diagnostic",p3)
+})
+
+testthat::test_that("additional scientific plots have visual regression specifications", {
+  testthat::skip_on_cran()
+  testthat::skip_if(Sys.getenv("GAMLSSPOSTHOC_VDIFFR") != "true", "Set GAMLSSPOSTHOC_VDIFFR=true to run visual snapshots")
+  testthat::skip_if_not_installed("vdiffr")
+  testthat::skip_if_not_installed("ggplot2")
+  testthat::skip_if_not_installed("distributions3")
+  z <- .make_v03_fit()
+  ph <- gamlss_posthoc(z$fit, "trt", estimand = "mean", contrast = "pairwise",
+                       uncertainty = "none", data = z$d)
+  p1 <- plot_gamlss_quantiles(z$fit, "dose", probs = c(.1, .25, .5, .75, .9),
+                              style = "fan", data = z$d, n = 15) + ggplot2::theme_test()
+  p2 <- plot_gamlss_contrasts(ph) + ggplot2::theme_test()
+  p3 <- plot_gamlss_derivative(z$fit, "dose", order = 1, data = z$d, n = 15) + ggplot2::theme_test()
+  vdiffr::expect_doppelganger("predictive quantile fan", p1)
+  vdiffr::expect_doppelganger("posthoc forest contrast", p2)
+  vdiffr::expect_doppelganger("first derivative curve", p3)
+})
